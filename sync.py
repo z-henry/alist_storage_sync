@@ -56,6 +56,7 @@ def sync_files(path_src, path_dst):
                         logger_config.logger.error(f"Failed to delete {file_name} from {path_src}")
 
 def perform_sync(task):
+    logger_config.logger.info(f"Sync start")
     if get_files(task.src)['is_dir'] == False:
-        task.src, last_part_src = os.path.split(path_src.rstrip('/'))
+        task.src, last_part_src = os.path.split(task.src.rstrip('/'))
     sync_files(task.src, task.dst)
