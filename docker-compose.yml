@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  alist_storage_sync:
+    image: alist_storage_sync:latest
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - /usr/mydocker/alist_storage_sync/config.json:/app/config.json
+      - /usr/mydocker/alist_storage_sync/app.log:/app/app.log
+    environment:
+      - PYTHONUNBUFFERED=1

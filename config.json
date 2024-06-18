@@ -1,0 +1,15 @@
+{
+    "tasks": [
+        {
+            "src": "/aliyun/emby",
+            "dst": "/115/emby"
+        }
+    ],
+    "alist": {
+        "url": "",
+        "apikey": ""
+	},
+    "cover_dst_when_diff": true,
+    "delete_src_when_same": true
+}
+  
