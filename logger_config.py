@@ -6,7 +6,7 @@ import sys
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 # 文件处理器
-file_handler = RotatingFileHandler('app.log', maxBytes=10000, backupCount=1)
+file_handler = RotatingFileHandler('app.log', maxBytes=10*1024*1024, backupCount=2)
 file_handler.setFormatter(log_formatter)
 file_handler.setLevel(logging.INFO)
 
