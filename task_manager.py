@@ -5,19 +5,25 @@ from api_client import task_undone
 from sync import perform_sync
 from config import sync_tasks
 
+CHECK_INTERVAL = 60  # 检查未完成任务的间隔时间（秒）
+SYNC_INTERVAL = 3600  # 同步任务的间隔时间（秒）
 
 def check_tasks():
     while True:
-        tasks = task_undone()
-        if tasks:
-            logger_config.logger.info("Tasks found, waiting for 1 minute...")
-            time.sleep(60)
-        else:
-            logger_config.logger.info("No asks found, performing sync...")
-            for sync_task in sync_tasks:
-                perform_sync(sync_task)
-            logger_config.logger.info("Sync end...")
-            time.sleep(3600)
+        try:
+            tasks = task_undone()
+            if tasks:
+                logger_config.logger.info("Tasks found, waiting for 1 minute...")
+                time.sleep(CHECK_INTERVAL)
+            else:
+                logger_config.logger.info("No tasks found, performing sync...")
+                for sync_task in sync_tasks:
+                    perform_sync(sync_task)
+                logger_config.logger.info("Sync end...")
+                time.sleep(SYNC_INTERVAL)
+        except Exception as e:
+            logger_config.logger.error(f"An error occurred: {e}")
+            time.sleep(SYNC_INTERVAL)
 
 def start_task_checker():
     task_thread = Thread(target=check_tasks)
