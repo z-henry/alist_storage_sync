@@ -1,7 +1,7 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import sys
-import o
+import os
 
 # 配置日志记录
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
