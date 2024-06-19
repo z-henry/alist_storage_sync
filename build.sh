@@ -10,7 +10,7 @@ else
 fi
 
 # 设置 Docker 镜像名称
-IMAGE_NAME="alist_storage_sync"
+IMAGE_NAME="henryzzzzzz/alist_storage_sync"
 
 # 构建 Docker 镜像并打上两个标签
 docker build -t $IMAGE_NAME:$VERSION_TAG -t $IMAGE_NAME:latest .
