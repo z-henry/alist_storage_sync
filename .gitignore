@@ -1,3 +1,4 @@
 /.history
 /__pycache__
 /*.log
+build.sh
