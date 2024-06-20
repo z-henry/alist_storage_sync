@@ -30,7 +30,7 @@ def copy_done():
     if text['code'] == 200:
         return text.get("data", [])
     else:
-        logger_config.logger.error(f"Failed to get done copy from {alist_url}")
+        logger_config.logger.error(f"Failed to get done copy from {alist_url}: {text['message']}")
         return None
     
 def copy_undone():
@@ -41,7 +41,7 @@ def copy_undone():
     if text['code'] == 200:
         return text.get("data", [])
     else:
-        logger_config.logger.error(f"Failed to get undone copy from {alist_url}")
+        logger_config.logger.error(f"Failed to get undone copy from {alist_url}: {text['message']}")
         return None
     
 def list_files(path, refresh=False):
@@ -53,7 +53,7 @@ def list_files(path, refresh=False):
     if text['code'] == 200:
         return text.get("data", {}).get("content", []) or []
     else:
-        logger_config.logger.error(f"Failed to list files from {alist_url} at {path}")
+        logger_config.logger.error(f"Failed to list files from {alist_url} at {path}: {text['message']}")
         return None
     
 def get_files(path, refresh=False):
@@ -65,7 +65,7 @@ def get_files(path, refresh=False):
     if text['code'] == 200:
         return text.get("data", {})
     else:
-        logger_config.logger.error(f"Failed to get files from {alist_url} at {path}")
+        logger_config.logger.error(f"Failed to get files from {alist_url} at {path}: {text['message']}")
         return None
 
 def copy_file(src_dir, dst_dir, file_name):
@@ -90,6 +90,6 @@ def mkdir(path):
         json={"path": path},
         headers=headers)
     if response.status_code != 200:
-        logger_config.logger.error(f"Failed to create directory {path} at {alist_url}")
+        logger_config.logger.error(f"Failed to create directory {path} at {alist_url}: {text['message']}")
     text = parse_json_response(response)
     return text['code'] == 200

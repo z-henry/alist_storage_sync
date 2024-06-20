@@ -33,7 +33,19 @@ def perform_cache_refresh(tasks):
     alist_unique_paths, emby_unique_files  = get_path(tasks)
     
     for path in alist_unique_paths:
-        if not get_files(path, True):
+        # 递归获取文件列表,由深到浅来刷新文件夹缓存
+        # 循环每次去掉最后一个斜杠及其之后的部分
+        tmp_path= path
+        while tmp_path:
+            if get_files(tmp_path, True):
+                break
+            # 找到最后一个斜杠的位置，截取到最后一个斜杠之前的部分
+            last_slash_index = tmp_path.rfind('/')
+            if last_slash_index == -1:
+                break
+            tmp_path = tmp_path[:last_slash_index]
+        
+        if tmp_path.rfind('/') == -1:
             logger_config.logger.error(f"Failed to update alist cache at {path}")
             return
         logger_config.logger.info(f"Succeed to update alist cache at {path}")
