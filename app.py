@@ -8,15 +8,19 @@ app = Flask(__name__)
 
 @app.route('/sync', methods=['POST'])
 def sync_now():
-    data = request.get_json()
-    task = Task(data.get('src'), data.get('dst'))
-    if task:
-        logger_config.logger.info(f"Sync initiated by api from {task.src} to {task.dst}")
-        perform_sync(task)
-        return jsonify({"status": "success", "message": f"Sync initiated from {task.src} to {task.dst}"}), 200
-    else:
-        logger_config.logger.error("src/dst is required")
-        return jsonify({"status": "error", "message": "src/dst is required"}), 400
+    try:
+        data = request.get_json()
+        task = Task(data.get('src'), data.get('dst'))
+        if task:
+            logger_config.logger.info(f"Sync initiated by api from {task.src} to {task.dst}")
+            perform_sync(task)
+            return jsonify({"status": "success", "message": f"Sync initiated from {task.src} to {task.dst}"}), 200
+        else:
+            logger_config.logger.error("src/dst is required")
+            return jsonify({"status": "error", "message": "src/dst is required"}), 400
+    except Exception as e:
+        logger_config.logger.error(f"[sync_now]An error occurred: {e}")
+        
 
 if __name__ == "__main__":
     logger_config.logger.info("Starting task checker...")
