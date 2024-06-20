@@ -1,6 +1,6 @@
 import re
 from api_emby import media_update
-from api_alist import get_files
+from api_alist import get_files, copy_clear_succeeded
 from config import emby_enbale, emby_mount_path
 import logger_config  # 导入日志配置
 
@@ -55,7 +55,9 @@ def perform_cache_refresh(tasks):
         if not media_update(emby_unique_files):
             for file in emby_unique_files:
                 logger_config.logger.error(f"Failed to update emby at {file}")
-            return
+            return 
         else:
             for file in emby_unique_files:
                 logger_config.logger.info(f"Succeed to update emby at {file}")
+                
+    copy_clear_succeeded()

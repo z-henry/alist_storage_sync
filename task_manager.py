@@ -1,7 +1,7 @@
 import time
 import logger_config  # 导入日志配置
 from threading import Thread
-from api_alist import copy_undone, copy_done, copy_clear_succeeded
+from api_alist import copy_undone, copy_done
 from sync import perform_sync
 from cashe_refresh import perform_cache_refresh
 from config import sync_tasks
@@ -49,7 +49,6 @@ def check_cache_refresh():
                         
                 # For succeeded tasks, perform cache refresh
                 perform_cache_refresh(succeeded_tasks)
-                copy_clear_succeeded()
                 logger_config.logger.debug("[cache check]Sync end...")
             time.sleep(INTERVAL)
         except Exception as e:
