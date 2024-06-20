@@ -1,6 +1,6 @@
 import re
 from api_emby import media_update
-from api_alist import get_files, copy_clear_succeeded
+from api_alist import list_files, copy_clear_succeeded
 from config import emby_enbale, emby_mount_path
 import logger_config  # 导入日志配置
 
@@ -37,7 +37,7 @@ def perform_cache_refresh(tasks):
         # 循环每次去掉最后一个斜杠及其之后的部分
         tmp_path= path
         while tmp_path:
-            if get_files(tmp_path, True):
+            if list_files(tmp_path, True):
                 break
             # 找到最后一个斜杠的位置，截取到最后一个斜杠之前的部分
             last_slash_index = tmp_path.rfind('/')
