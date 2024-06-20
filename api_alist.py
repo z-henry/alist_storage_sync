@@ -14,8 +14,26 @@ def parse_json_response(response):
     except json.JSONDecodeError as e:
         logger_config.logger.error(f"Failed to parse JSON response: {e}")
         return None
+
+def copy_clear_succeeded():
+    response = requests.post(
+        f"{alist_url}/api/admin/task/copy/clear_succeeded", 
+        headers=headers)
+    text = parse_json_response(response)
+    return text['code'] == 200
     
-def task_undone():
+def copy_done():
+    response = requests.get(
+        f"{alist_url}/api/admin/task/copy/done", 
+        headers=headers)
+    text = parse_json_response(response)
+    if text['code'] == 200:
+        return text.get("data", [])
+    else:
+        logger_config.logger.error(f"Failed to get done copy from {alist_url}")
+        return None
+    
+def copy_undone():
     response = requests.get(
         f"{alist_url}/api/admin/task/copy/undone", 
         headers=headers)
@@ -23,32 +41,32 @@ def task_undone():
     if text['code'] == 200:
         return text.get("data", [])
     else:
-        logger_config.logger.error(f"Failed to get undone task from {alist_url}")
-        return []
+        logger_config.logger.error(f"Failed to get undone copy from {alist_url}")
+        return None
     
-def list_files(path, password="", page=1, per_page=0, refresh=False):
+def list_files(path, refresh=False):
     response = requests.post(
         f"{alist_url}/api/fs/list", 
-        json={"path": path},
+        json={"path": path, "refresh": refresh},
         headers=headers)
     text = parse_json_response(response)
     if text['code'] == 200:
         return text.get("data", {}).get("content", []) or []
     else:
         logger_config.logger.error(f"Failed to list files from {alist_url} at {path}")
-        return []
+        return None
     
-def get_files(path):
+def get_files(path, refresh=False):
     response = requests.post(
         f"{alist_url}/api/fs/get", 
-        json={"path": path},
+        json={"path": path, "refresh": refresh},
         headers=headers)
     text = parse_json_response(response)
     if text['code'] == 200:
         return text.get("data", {})
     else:
         logger_config.logger.error(f"Failed to get files from {alist_url} at {path}")
-        return []
+        return None
 
 def copy_file(src_dir, dst_dir, file_name):
     response = requests.post(

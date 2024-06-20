@@ -1,14 +1,18 @@
 import os
 import logger_config  # 导入日志配置
-from api_client import list_files, get_files, copy_file, remove_file, mkdir
+from api_alist import list_files, get_files, copy_file, remove_file, mkdir
 from config import cover_dst_when_diff, delete_src_when_same, Task
 
 
 def sync_files(path_src, path_dst):
     files_src = list_files(path_src)
+    if files_src is None: 
+        return
+    files_dst = list_files(path_dst)
+    if files_dst is None: 
+        return
     
     # Check if the destination directory exists, create it if it doesn't
-    files_dst = list_files(path_dst)
     if not files_dst:
         parent_dir_dst, last_part_dst = os.path.split(path_dst.rstrip('/'))
         parent_dir_src, last_part_src = os.path.split(path_src.rstrip('/'))
@@ -56,6 +60,10 @@ def sync_files(path_src, path_dst):
                         logger_config.logger.error(f"Failed to delete {file_name} from {path_src}")
 
 def perform_sync(task):
+    if not get_files(task.src):
+        logger_config.logger.info(f"Sync task src {task.src} no found")
+        return
+    
     if get_files(task.src)['is_dir'] == False:
         task_src_adjusted, last_part_src = os.path.split(task.src.rstrip('/'))
         task.src = task_src_adjusted
