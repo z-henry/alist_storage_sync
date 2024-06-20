@@ -48,7 +48,8 @@ def check_cache_refresh():
                         failed_tasks.append(done_task)
                         
                 # For succeeded tasks, perform cache refresh
-                perform_cache_refresh(succeeded_tasks)
+                if succeeded_tasks:
+                    perform_cache_refresh(succeeded_tasks)
                 logger_config.logger.debug("[cache check]Sync end...")
             time.sleep(INTERVAL)
         except Exception as e:
