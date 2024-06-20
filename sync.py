@@ -9,8 +9,6 @@ def sync_files(path_src, path_dst):
     if files_src is None: 
         return
     files_dst = list_files(path_dst)
-    if files_dst is None: 
-        return
     
     # Check if the destination directory exists, create it if it doesn't
     if not files_dst:
