@@ -15,7 +15,7 @@
 
 ## 配置
 
-使用前，需要创建一个配置文件 `config.json`。详细的配置说明可以在 [Wiki]([https://github.com/henryzzzzzz/alist_storage_sync/wiki](https://github.com/z-henry/alist_storage_sync/wiki/配置说明)) 中找到。
+使用前，需要创建一个配置文件 `config.json`。详细的配置说明可以在 [Wiki](https://github.com/z-henry/alist_storage_sync/wiki/配置说明) 中找到。
 
 ## 部署
 
