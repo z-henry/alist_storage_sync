@@ -8,7 +8,7 @@ log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 # 确保日志目录存在
 if not os.path.exists('log'):
-    os.makedirs(log_dir)
+    os.makedirs('log')
 # 文件处理器
 file_handler = RotatingFileHandler('log/app.log', maxBytes=10*1024*1024, backupCount=2)
 file_handler.setFormatter(log_formatter)

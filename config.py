@@ -9,7 +9,7 @@ class Task:
 
 # 加载配置文件
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-with open(config_path, 'r') as f:
+with open(config_path, 'r',encoding='utf8') as f:
     config = json.load(f)
 
 # 提供配置访问接口
