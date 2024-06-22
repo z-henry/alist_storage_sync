@@ -1,110 +1,79 @@
 # alist_storage_sync
-基于alist的不同存储间，自动同步复制工具
 
-dockerhub： henryzzzzzz/alist_storage_sync
+![GitHub stars](https://img.shields.io/github/stars/henryzzzzzz/alist_storage_sync?style=social)
+![GitHub release (latest by date)](https://img.shields.io/github/v/tag/henryzzzzzz/alist_storage_sync)
+![Docker Pulls](https://img.shields.io/docker/pulls/henryzzzzzz/alist_storage_sync)
+![Docker Image Size](https://img.shields.io/docker/image-size/henryzzzzzz/alist_storage_sync/latest)
 
 
-# 配置文件注解文档
-## 示例
+`alist_storage_sync` 是一个用于定时同步两个 alist 存储的工具，并可以选择扫描已完成的复制任务，刷新缓存并通知 Emby 进行相应文件夹扫描。
 
-以下是一个完整的`config.json`示例，请配置在程序根目录下
+## 功能
 
-```json
-{
-    "tasks": [
-        {
-            "src": "your_src_path",
-            "dst": "your_dst_path"
-        }
-    ],
-    "alist": {
-        "url": "you_alist_url",
-        "apikey": "your_alist_apikey"
-    },
-    "cover_dst_when_diff": true,
-    "delete_src_when_same": true,
-    "emby":{
-        "enabled": true,
-        "url": "you_emby_url",
-        "apikey": "your_emby_apikey",
-        "mount_path": "your_webdav_mount_base_path"
-    }
-}
-```
+- **存储同步**: 通过 alist 复制的方式，定时将一个 alist 存储同步到另一个存储上。
+- **可选功能**: 扫描 alist 的已完成的复制任务，刷新 alist 的缓存并通知 Emby 进行对应文件夹扫描。
 
-## 字段说明
+## 配置
 
-### tasks
+使用前，需要创建一个配置文件 `config.json`。详细的配置说明可以在 [Wiki]([https://github.com/henryzzzzzz/alist_storage_sync/wiki](https://github.com/z-henry/alist_storage_sync/wiki/配置说明)) 中找到。
 
-`tasks`字段是一个任务列表，每个任务包含源路径和目标路径。
+## 部署
 
-```json
-"tasks": [
-    {
-        "src": "your_src_path",
-        "dst": "your_dst_path"
-    }
-]
-```
+### Docker 部署
 
-- `src`: alist中的源路径，例如 `/aliyun/emby`。
-- `dst`: alist中的目标路径，例如 `/115/emby`。
+在使用 Docker 部署 `alist_storage_sync` 前，请确保已经创建好 `config.json` 并放置在合适的路径。
 
-### alist
+1. **创建配置文件**
 
-`alist`字段包含有关alist服务的配置。
+   创建 `config.json` 并放置在 `/your_path/` 路径下
 
-```json
-"alist": {
-    "url": "you_alist_url",
-    "apikey": "your_alist_apikey"
-}
-```
+2. **Docker Compose 配置**
 
-- `url`: alist服务的URL，例如 `http://127.0.0.1:5244`。
-- `apikey`: alist服务的API密钥，例如 `13212312312313232`。
+   创建一个 `docker-compose.yml` 文件，并添加以下内容：
 
-### cover_dst_when_diff
+   ```yaml
+   version: '3'
+   services:
+     alist_storage_sync:
+       container_name: alist_storage_sync
+       image: henryzzzzzz/alist_storage_sync:latest
+       ports:
+         - "8115:8115"
+       volumes:
+         - /your_path/config.json:/app/config.json
+         - /your_path/log:/app/log
+       environment:
+         - TZ=Asia/Shanghai
+   ```
 
-`cover_dst_when_diff`字段是一个布尔值，用于决定当目标文件与源文件名称匹配，但是大小不同时，是否覆盖目标文件。
+3. **运行 Docker 容器**
 
-```json
-"cover_dst_when_diff": true
-```
+   在 `docker-compose.yml` 文件所在目录运行以下命令启动容器：
 
-- `true`: 覆盖目标文件。
-- `false`: 不覆盖目标文件。
+   ```sh
+   docker-compose up -d
+   ```
 
-### delete_src_when_same
+### 直接运行
 
-`delete_src_when_same`字段是一个布尔值，用于决定当目标文件与源文件名称匹配，且大小不同时，是否删除源文件。
+如果不使用 Docker，也可以直接运行 `alist_storage_sync`。
 
-```json
-"delete_src_when_same": true
-```
+1. **放置配置文件**
 
-- `true`: 删除源文件。
-- `false`: 不删除源文件。
+   确保 `config.json` 文件放置在项目根目录下。
 
-### emby（试验性）
-***webdav挂载必须挂载的事alist根目录***
-***此操作会执行操作alist->任务->复制->清除已成功，此操作不可回溯，介意请勿启用***
+2. **运行应用**
 
-`emby`字段包含有关emby服务的配置。
+   使用以下命令运行应用：
 
-```json
-"emby": {
-    "enabled": true,
-    "url": "you_emby_url",
-    "apikey": "your_emby_apikey",
-    "mount_path": "your_webdav_mount_base_path"
-}
-```
+   ```sh
+   python app.py
+   ```
 
-- `enabled`: 在alist复制完成时，是否通知emby进行刷新媒体库操作。
-  - `true`: 启用emby刷新。
-  - `false`: 不启用emby刷新。
-- `url`: emby服务的URL，例如 `http://127.0.0.1:8096`。
-- `apikey`: emby服务的API密钥，例如 `123123123123123`。
-- `mount_path`: 将alist通过WebDAV挂载的本地路径，例如`/media/webdav`。
+## 贡献
 
+欢迎提交 issue 和 pull request 来改进本项目。
+
+## 许可证
+
+本项目使用AGPL-3.0 license.
