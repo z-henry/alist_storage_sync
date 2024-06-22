@@ -1,7 +1,7 @@
 # alist_storage_sync
 
-![GitHub stars](https://img.shields.io/github/stars/henryzzzzzz/alist_storage_sync?style=social)
-![GitHub release (latest by date)](https://img.shields.io/github/v/tag/henryzzzzzz/alist_storage_sync)
+![GitHub stars](https://img.shields.io/github/stars/z-henry/alist_storage_sync?style=social)
+![GitHub release (latest by date)](https://img.shields.io/github/v/tag/z-henry/alist_storage_sync)
 ![Docker Pulls](https://img.shields.io/docker/pulls/henryzzzzzz/alist_storage_sync)
 ![Docker Image Size](https://img.shields.io/docker/image-size/henryzzzzzz/alist_storage_sync/latest)
 
