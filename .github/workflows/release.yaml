@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - my
+      - main
     paths:
-      - app/version.py
+      - version.py
 
 jobs:
   Get-Version:
