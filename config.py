@@ -3,7 +3,7 @@ import os
 
 # 任务类
 class Task:
-    def __init__(self, src, dst, cron):
+    def __init__(self, src, dst, cron='1 * * * *'):
         self.src = src
         self.dst = dst
         self.cron = cron
