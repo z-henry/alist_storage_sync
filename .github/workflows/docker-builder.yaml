@@ -12,9 +12,9 @@ on:
         required: true
         type: boolean
     secrets:
-      DOCKERHUB_USERNAME:
+      DOCKER_USERNAME:
         required: true
-      DOCKERHUB_TOKEN:
+      DOCKER_PASSWORD:
         required: true
 
 env:
@@ -38,7 +38,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/alist_storage_sync
+          images: ${{ secrets.DOCKER_USERNAME }}/alist_storage_sync
           tags: |
               type=raw,value=latest,enable=${{ env.IS_LATEST }}
               type=raw,value=${{ env.APP_VERSION }},enable=true
