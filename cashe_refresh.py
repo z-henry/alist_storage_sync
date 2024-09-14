@@ -1,7 +1,8 @@
 import re
-from api_emby import media_update
-from api_alist import list_files, copy_clear_succeeded
-from config import emby_enbale, emby_mount_path
+import api_emby
+import api_alist
+import api_webhook
+from config import emby_enable, emby_mount_path, webhook_enable
 import logger_config  # 导入日志配置
 
 def get_path(tasks):
@@ -37,7 +38,7 @@ def perform_cache_refresh(tasks):
         # 循环每次去掉最后一个斜杠及其之后的部分
         tmp_path= path
         while tmp_path:
-            if list_files(tmp_path, True):
+            if api_alist.list_files(tmp_path, True):
                 break
             # 找到最后一个斜杠的位置，截取到最后一个斜杠之前的部分
             last_slash_index = tmp_path.rfind('/')
@@ -51,8 +52,8 @@ def perform_cache_refresh(tasks):
         logger_config.logger.info(f"Succeed to update alist cache at {path}")
         
         
-    if emby_enbale:
-        if not media_update(emby_unique_files):
+    if emby_enable:
+        if not api_emby.media_update(emby_unique_files):
             for file in emby_unique_files:
                 logger_config.logger.error(f"Failed to update emby at {file}")
             return 
@@ -60,4 +61,13 @@ def perform_cache_refresh(tasks):
             for file in emby_unique_files:
                 logger_config.logger.info(f"Succeed to update emby at {file}")
                 
-    copy_clear_succeeded()
+    if webhook_enable:
+        if not api_webhook.media_update(emby_unique_files):
+            for file in emby_unique_files:
+                logger_config.logger.error(f"Failed to call webhook at {file}")
+            return 
+        else:
+            for file in emby_unique_files:
+                logger_config.logger.info(f"Succeed to call webhook at {file}")
+                
+    api_alist.copy_clear_succeeded()

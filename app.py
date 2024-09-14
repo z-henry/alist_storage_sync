@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from sync import perform_sync
-from task_manager import start_task_checker, start_cache_refresh_checker
+from task_manager import start_checker
 import logger_config  # 导入日志配置
 from config import Task
 
@@ -24,7 +24,6 @@ def sync_now():
 
 if __name__ == "__main__":
     logger_config.logger.info("Starting task checker...")
-    start_task_checker()
-    start_cache_refresh_checker()
+    start_checker()
     logger_config.logger.info("Task checker started")
-    app.run(host='0.0.0.0', port=8115)
+    app.run(host='0.0.0.0', port=8115, threaded=True, use_reloader=False)
