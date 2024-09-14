@@ -2,6 +2,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import time
 import logger_config  # 导入日志配置
+import logging
 
 from api_alist import copy_undone, copy_done
 from sync import perform_sync
@@ -46,10 +47,10 @@ def check_cache_refresh():
             logger_config.logger.debug("[cache check]Sync end...")
     except Exception as e:
         logger_config.logger.error(f"[cache check]An error occurred: {e}")
-        time.sleep(INTERVAL)
 
 def start_checker():
     scheduler = BackgroundScheduler()
+    logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
     for sync_task in sync_tasks:
         scheduler.add_job(check_tasks, args=[sync_task], trigger=CronTrigger.from_crontab(sync_task.cron))
