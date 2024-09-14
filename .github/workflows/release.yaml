@@ -20,7 +20,7 @@ jobs:
       - name: APP Version
         id: version
         run: |
-          APP_VERSION=$(cat app/version.py | sed -ne 's/APP_VERSION\s=\s"v\(.*\)"/\1/gp')
+          APP_VERSION=$(cat version.py | sed -ne 's/APP_VERSION\s=\s"v\(.*\)"/\1/gp')
           echo "检测到版本号为 $APP_VERSION"
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -32,5 +32,5 @@ jobs:
       APP_VERSION: ${{ needs.Get-Version.outputs.app_version }}
       IS_LATEST: true
     secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKER_PASSWORD }}
