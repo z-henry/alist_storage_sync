@@ -2,7 +2,7 @@ import os
 import logger_config  # 导入日志配置
 from api_alist import list_files, get_files, copy_file, remove_file, mkdir
 from config import cover_dst_when_diff, delete_src_when_same, Task
-
+from cashe_refresh import recursive_refresh_cache
 
 def sync_files(path_src, path_dst):
     files_src = list_files(path_src)
@@ -57,7 +57,13 @@ def sync_files(path_src, path_dst):
                     if not remove_file(path_src, file_name):
                         logger_config.logger.error(f"Failed to delete {file_name} from {path_src}")
 
-def perform_sync(task):
+def perform_sync(task, refresh = False):
+    
+    if refresh:
+        if not recursive_refresh_cache(task.src):
+            logger_config.logger.error(f"Failed to update alist cache at {task.src}")
+            return
+        
     if not get_files(task.src):
         logger_config.logger.info(f"Sync task src {task.src} no found")
         return
