@@ -2,6 +2,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import logger_config  # 导入日志配置
 import logging
+import threading
 
 from api_alist import copy_undone, copy_done
 from sync import perform_sync
@@ -18,26 +19,33 @@ def infer_dst_path(path) -> str:
     return ''
 
 
-def check_tasks(sync_task):
+check_tasks_lock = threading.Lock()
+def check_tasks(sync_task, refresh):
+    if not check_tasks_lock.acquire(blocking=False):
+        logger_config.logger.info("[sync check] 已有一个实例在运行。跳过执行。")
+        return  # 如果锁已被获取，直接退出    
+    logger_config.logger.info(f"[sync check] task:{sync_task.uuid} start")
     try:
         tasks = copy_undone()
         if tasks:
-            logger_config.logger.info("[sync check]Undone tasks found, waiting...")
+            logger_config.logger.info("[sync check] Undone tasks found, waiting...")
         else:
-            logger_config.logger.info("[sync check]No undone tasks found, performing sync...")
-            perform_sync(sync_task)
-            logger_config.logger.info("[sync check]Sync end...")
+            logger_config.logger.info("[sync check] No undone tasks found, performing sync...")
+            perform_sync(sync_task, refresh)
+            logger_config.logger.info(f"[sync check] task:{sync_task.uuid} end...")
     except Exception as e:
-        logger_config.logger.error(f"[sync check]An error occurred: {e}")
+        logger_config.logger.error(f"[sync check] An error occurred: {e}")
+    finally:
+        check_tasks_lock.release()
             
 
 def check_cache_refresh():
     try:
         tasks = copy_undone()
         if tasks:
-            logger_config.logger.info("[cache check]Undone tasks found, waiting...")
+            logger_config.logger.info("[cache check] Undone tasks found, waiting...")
         else:
-            logger_config.logger.debug("[cache check]No undone tasks found, performing cache refresh...")
+            logger_config.logger.debug("[cache check] No undone tasks found, performing cache refresh...")
             
             # Classify done tasks by state
             done_tasks = copy_done()
@@ -52,16 +60,16 @@ def check_cache_refresh():
             # For succeeded tasks, perform cache refresh
             if succeeded_tasks:
                 perform_cache_refresh(succeeded_tasks)
-            logger_config.logger.debug("[cache check]Sync end...")
+            logger_config.logger.debug("[cache check] Sync end...")
     except Exception as e:
-        logger_config.logger.error(f"[cache check]An error occurred: {e}")
+        logger_config.logger.error(f"[cache check] An error occurred: {e}")
 
 def start_checker():
     scheduler = BackgroundScheduler()
     logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
     for sync_task in sync_tasks:
-        scheduler.add_job(check_tasks, args=[sync_task], trigger=CronTrigger.from_crontab(sync_task.cron))
+        scheduler.add_job(check_tasks, args=[sync_task, False], trigger=CronTrigger.from_crontab(sync_task.cron))
     scheduler.add_job(check_cache_refresh, trigger=CronTrigger(minute="*"))
 
     scheduler.start()

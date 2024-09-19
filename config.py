@@ -23,7 +23,8 @@ sync_tasks = [
         task.get('uuid', str(index + 1)),  # 如果没有 uuid，就用从 1 开始的 index
         task['src'],
         task['dst'],
-        task.get('cron', '1 * * * *')
+        task.get('cron', '1 * * * *'),
+        task.get('mounted_path', '')
     )
     for index, task in enumerate(config['tasks'])
 ]
