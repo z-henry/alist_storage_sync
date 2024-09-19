@@ -16,9 +16,9 @@ def sync_files(path_src, path_dst):
         parent_dir_src, last_part_src = os.path.split(path_src.rstrip('/'))
         mkdir(parent_dir_dst)
         logger_config.logger.info(f"Creating directory {parent_dir_dst}")
-        logger_config.logger.info(f"Copy new directory {parent_dir_dst}")
         if not copy_file(parent_dir_src, parent_dir_dst, last_part_src):
             logger_config.logger.error(f"Failed to copy {last_part_src} from {parent_dir_src} to {parent_dir_dst}")
+        logger_config.logger.info(f"Copy new directory {parent_dir_dst}")
         return
     
     files_dst_dict = {file["name"]: file for file in files_dst}
@@ -70,7 +70,10 @@ def perform_sync(task, refresh = False):
     
     if get_files(task.src)['is_dir'] == False:
         task_src_adjusted, last_part_src = os.path.split(task.src.rstrip('/'))
+        logger_config.logger.info(f'Sync task.src "{task.src}" is not a directory, change to "{task_src_adjusted}"')
         task.src = task_src_adjusted
-        logger_config.logger.info(f"Sync task {task.src} is not a directory, change to {task_src_adjusted}")
-    logger_config.logger.info(f"Sync task from {task.src} to {task.dst}")
+        task_dst_adjusted, last_part_dst = os.path.split(task.dst.rstrip('/'))
+        logger_config.logger.info(f'Sync task.dst "{task.dst}" is not a directory, change to "{task_dst_adjusted}"')
+        task.dst = task_dst_adjusted
+    logger_config.logger.info(f'Sync task from "{task.src}" to "{task.dst}"')
     sync_files(task.src, task.dst)

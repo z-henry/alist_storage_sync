@@ -3,10 +3,12 @@ import os
 
 # 任务类
 class Task:
-    def __init__(self, src, dst, cron='1 * * * *'):
+    def __init__(self, uuid, src, dst, cron='1 * * * *', mounted_path = ""):
         self.src = src
         self.dst = dst
         self.cron = cron
+        self.uuid = uuid
+        self.mounted_path = mounted_path
 
 # 加载配置文件
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -16,7 +18,15 @@ with open(config_path, 'r',encoding='utf8') as f:
 # 提供配置访问接口
 authorization = config['alist']['apikey']
 alist_url = config['alist']['url']
-sync_tasks = [Task(task['src'], task['dst'], task.get('cron', '1 * * * *')) for task in config['tasks']]
+sync_tasks = [
+    Task(
+        task.get('uuid', str(index + 1)),  # 如果没有 uuid，就用从 1 开始的 index
+        task['src'],
+        task['dst'],
+        task.get('cron', '1 * * * *')
+    )
+    for index, task in enumerate(config['tasks'])
+]
 
 #文件不同时覆盖目标文件
 cover_dst_when_diff = config['cover_dst_when_diff']

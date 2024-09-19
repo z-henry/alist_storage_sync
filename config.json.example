@@ -1,9 +1,17 @@
 {
     "tasks": [
         {
+            "uuid": "aliyunsub",
             "src": "/aliyun/test",
             "dst": "/115/test",
-            "cron": "0/1 * * * *"
+            "cron": "0/1 * * * *",
+        },
+        {
+            "uuid": "movie-pilot",
+            "src": "/mydisk/test",
+            "dst": "/115/test",
+            "cron": "0/1 * * * *",
+            "mounted_path": ""
         }
     ],
     "alist": {
