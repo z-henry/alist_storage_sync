@@ -123,7 +123,7 @@ def sync_from_moviepilot(id):
             return jsonify({"status": "fail", "message": msg}), 400
         
         for iter_file in data.get('data').get('transferinfo').get('file_list_new'):
-            final_target_path = iter
+            final_target_path = iter_file
             
             task = Task(f"/movie-pilot/{id}", '', '')
             # 将 task_matched.mounted_path 进行转义，防止其中的正则特殊字符产生影响
