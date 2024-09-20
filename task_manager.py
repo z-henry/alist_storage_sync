@@ -3,12 +3,32 @@ from apscheduler.triggers.cron import CronTrigger
 import logger_config  # 导入日志配置
 import logging
 import threading
+import queue
 
 from api_alist import copy_undone, copy_done
 from sync import perform_sync
 from cashe_refresh import perform_cache_refresh
 from config import sync_tasks
 
+# 创建一个全局任务队列
+task_queue = queue.Queue()
+
+# 工作线程函数
+def task_worker():
+    while True:
+        func, args = task_queue.get()
+        try:
+            func(*args)
+        except Exception as e:
+            logger_config.logger.error(f"[task worker] 任务执行时发生错误：{e}")
+        finally:
+            task_queue.task_done()
+
+# 启动工作线程
+def start_worker():
+    worker_thread = threading.Thread(target=task_worker, daemon=True)
+    worker_thread.start()
+    
 # 遍历 sync_tasks 列表，检查是否有任务的 src 出现在 path 中
 def infer_dst_path(path) -> str:    
     for task in sync_tasks:
@@ -18,12 +38,14 @@ def infer_dst_path(path) -> str:
     # 如果没有匹配到，返回原始 path
     return ''
 
-
-check_tasks_lock = threading.Lock()
+# 修改后的 check_tasks 函数
 def check_tasks(sync_task, refresh):
-    if not check_tasks_lock.acquire(blocking=False):
-        logger_config.logger.info("[sync check] 已有一个实例在运行。跳过执行。")
-        return  # 如果锁已被获取，直接退出    
+    # 将任务添加到队列
+    task_queue.put((execute_check_tasks, [sync_task, refresh]))
+    logger_config.logger.info(f"[task queue] 添加同步任务到队列：{sync_task}")
+    
+    
+def execute_check_tasks(sync_task, refresh):
     logger_config.logger.info(f"[sync check] task:{sync_task.uuid} start")
     try:
         tasks = copy_undone()
@@ -35,11 +57,18 @@ def check_tasks(sync_task, refresh):
             logger_config.logger.info(f"[sync check] task:{sync_task.uuid} end...")
     except Exception as e:
         logger_config.logger.error(f"[sync check] An error occurred: {e}")
-    finally:
-        check_tasks_lock.release()
             
-
 def check_cache_refresh():
+    # 如果任务队列的大小大于1，则不添加任务
+    if task_queue.qsize() > 1:
+        logger_config.logger.info("[cache check] 任务队列中已有多个任务，跳过缓存刷新任务的添加。")
+        return
+    # 将任务添加到队列
+    task_queue.put((execute_check_cache_refresh, []))
+    logger_config.logger.info("[task queue] 添加缓存刷新任务到队列。")
+    
+
+def execute_check_cache_refresh():
     try:
         tasks = copy_undone()
         if tasks:
@@ -65,6 +94,8 @@ def check_cache_refresh():
         logger_config.logger.error(f"[cache check] An error occurred: {e}")
 
 def start_checker():
+    start_worker()  # 启动任务工作线程
+    
     scheduler = BackgroundScheduler()
     logging.getLogger('apscheduler').setLevel(logging.WARNING)
 

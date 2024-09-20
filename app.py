@@ -122,21 +122,19 @@ def sync_from_moviepilot(id):
             logger_config.logger.error(f"[sync_from_moviepilot] {msg}")
             return jsonify({"status": "fail", "message": msg}), 400
         
-        path = data.get('data').get('transferinfo').get('path')
-        target_path = data.get('data').get('transferinfo').get('target_path')
-        file_name = os.path.basename(path)
-        final_target_path = target_path + '/' +file_name
-        
-        task = Task(f"/movie-pilot/{id}", '', '')
-        # 将 task_matched.mounted_path 进行转义，防止其中的正则特殊字符产生影响
-        escaped_path = re.escape(task_matched.mounted_path)
-        pattern = f"^{escaped_path}"
-        task.src = re.sub(pattern, task_matched.src, final_target_path)
-        task.dst = re.sub(pattern, task_matched.dst, final_target_path)
+        for iter_file in data.get('data').get('transferinfo').get('file_list_new'):
+            final_target_path = iter
+            
+            task = Task(f"/movie-pilot/{id}", '', '')
+            # 将 task_matched.mounted_path 进行转义，防止其中的正则特殊字符产生影响
+            escaped_path = re.escape(task_matched.mounted_path)
+            pattern = f"^{escaped_path}"
+            task.src = re.sub(pattern, task_matched.src, final_target_path)
+            task.dst = re.sub(pattern, task_matched.dst, final_target_path)
 
-        msg = f'Sync initiated task:{task.uuid} from {task.src} to {task.dst}' 
-        logger_config.logger.info(f"[sync_from_moviepilot] {msg}")
-        check_tasks(task, True)
+            msg = f'Sync initiated task:{task.uuid} from {task.src} to {task.dst}' 
+            logger_config.logger.info(f"[sync_from_moviepilot] {msg}")
+            check_tasks(task, True)
         return jsonify({"status": "success", "message": msg}), 200
     
     except Exception as e:

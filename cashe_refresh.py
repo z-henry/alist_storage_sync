@@ -54,6 +54,8 @@ def perform_cache_refresh(tasks):
             return
         logger_config.logger.info(f"Succeed to update alist cache at {path}")
         
+    api_alist.copy_clear_succeeded()
+        
         
     if emby_enable:
         if not api_emby.media_update(unique_paths):
@@ -73,4 +75,3 @@ def perform_cache_refresh(tasks):
             for file in unique_paths:
                 logger_config.logger.info(f"Succeed to call webhook at {file}")
                 
-    api_alist.copy_clear_succeeded()
