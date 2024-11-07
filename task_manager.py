@@ -103,8 +103,8 @@ def execute_dir_tree_build(task):
     logger_config.logger.info(f"[dir_tree_build check] task:{task.uuid} start")
     try:
             logger_config.logger.info("[dir_tree_build check] performing...")
-            recursive_refresh_cache_all(task.src, 1/task.qps)
-            logger_config.logger.info(f"[dir_tree_build check] task:{task.uuid} end...")
+            n_count= recursive_refresh_cache_all(task.src, 1/task.qps)
+            logger_config.logger.info(f"[dir_tree_build check] task:{task.uuid} end. update {n_count} records...")
     except Exception as e:
         logger_config.logger.error(f"[dir_tree_build check] An error occurred: {e}")
 

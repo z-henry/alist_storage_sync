@@ -48,16 +48,21 @@ def recursive_refresh_cache(path) -> bool:
     return refresh_succeed
 
 # 全量刷新
-def recursive_refresh_cache_all(path, delay):
+def recursive_refresh_cache_all(path, delay) -> int:
+    count = 1  # 初始值为1，因为当前路径调用了一次 list_files
     files_src = api_alist.list_files(path, True)
     logger_config.logger.info(f"refresh dir {path}")
     sleep(delay)
-    if files_src is None: 
-        return
+    
+    if files_src is None:
+        return count  # 直接返回当前计数
     
     for file_src in files_src:
         if file_src["is_dir"] == True:
-            recursive_refresh_cache_all(os.path.join(path, file_src["name"]), delay)
+            # 递归调用并累加返回的调用次数
+            count += recursive_refresh_cache_all(os.path.join(path, file_src["name"]), delay)
+    
+    return count  # 返回总计数
 
 def perform_cache_refresh(tasks):
     unique_paths = get_path(tasks)

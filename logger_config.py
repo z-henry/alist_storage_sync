@@ -19,6 +19,7 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(log_formatter)
 console_handler.setLevel(logging.INFO)
 
+
 # 获取logger实例并配置
 logger = logging.getLogger()
 logger.addHandler(file_handler)
