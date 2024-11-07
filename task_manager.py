@@ -7,8 +7,8 @@ import queue
 
 from api_alist import copy_undone, copy_done
 from sync import perform_sync
-from cashe_refresh import perform_cache_refresh
-from config import sync_tasks
+from cashe_refresh import perform_cache_refresh, recursive_refresh_cache_all
+from config import sync_tasks, dir_tree_build_tasks
 
 # 创建一个全局任务队列
 task_queue = queue.Queue()
@@ -92,6 +92,21 @@ def execute_check_cache_refresh():
             logger_config.logger.debug("[cache check] Sync end...")
     except Exception as e:
         logger_config.logger.error(f"[cache check] An error occurred: {e}")
+        
+def check_dir_tree_build(task):
+    # 将任务添加到队列
+    task_queue.put((execute_dir_tree_build, [task]))
+    logger_config.logger.info(f"[task queue] 添加目录树重建到队列：{task}")
+    
+    
+def execute_dir_tree_build(task):
+    logger_config.logger.info(f"[dir_tree_build check] task:{task.uuid} start")
+    try:
+            logger_config.logger.info("[dir_tree_build check] performing...")
+            recursive_refresh_cache_all(task.src, 1/task.qps)
+            logger_config.logger.info(f"[dir_tree_build check] task:{task.uuid} end...")
+    except Exception as e:
+        logger_config.logger.error(f"[dir_tree_build check] An error occurred: {e}")
 
 def start_checker():
     start_worker()  # 启动任务工作线程
@@ -102,6 +117,8 @@ def start_checker():
     for sync_task in sync_tasks:
         scheduler.add_job(check_tasks, args=[sync_task, False], trigger=CronTrigger.from_crontab(sync_task.cron))
     scheduler.add_job(check_cache_refresh, trigger=CronTrigger(minute="*"))
+    for dir_tree_build_task in dir_tree_build_tasks:
+        scheduler.add_job(check_dir_tree_build, args=[dir_tree_build_task], trigger=CronTrigger.from_crontab(dir_tree_build_task.cron))
 
     scheduler.start()
 

@@ -4,6 +4,8 @@ import api_alist
 import api_webhook
 from config import emby_enable, webhook_enable
 import logger_config  # 导入日志配置
+import os
+from time import sleep
 
 def get_path(tasks):
     # 筛选出 status 为 "getting src object" 的项目
@@ -44,6 +46,18 @@ def recursive_refresh_cache(path) -> bool:
             refresh_succeed = True
             break
     return refresh_succeed
+
+# 全量刷新
+def recursive_refresh_cache_all(path, delay):
+    files_src = api_alist.list_files(path, True)
+    logger_config.logger.info(f"refresh dir {path}")
+    sleep(delay)
+    if files_src is None: 
+        return
+    
+    for file_src in files_src:
+        if file_src["is_dir"] == True:
+            recursive_refresh_cache_all(os.path.join(path, file_src["name"]), delay)
 
 def perform_cache_refresh(tasks):
     unique_paths = get_path(tasks)

@@ -29,6 +29,14 @@
     "webhook":{
         "enabled": false,
         "url": "http://0.0.0.0:0000/api"
-    }
+    },
+    "dir_tree_build_tasks":[
+        {
+            "uuid": "",
+            "src": "/115",
+            "qps":0.01,
+            "cron": "0 12 * * *"
+        }
+    ]
 }
   

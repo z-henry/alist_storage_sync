@@ -45,3 +45,19 @@ emby_mount_path = config['emby']['mount_path']
 webhook_enable = config['webhook']['enabled']
 webhook_url = config['webhook']['url']
 
+#缓慢加载目录树 配置
+class DirTreeBuildTask:
+    def __init__(self, uuid, src, cron, qps):
+        self.uuid = uuid
+        self.src = src
+        self.cron = cron
+        self.qps = qps
+dir_tree_build_tasks = [
+    DirTreeBuildTask(
+        task.get('uuid', "dir_tree_build-" + str(index + 1)),  # 如果没有 uuid，就用从 1 开始的 index
+        task['src'],
+        task['cron'],
+        task['qps']
+        )
+    for index, task in enumerate(config['dir_tree_build_tasks'])
+]
