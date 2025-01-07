@@ -11,14 +11,10 @@ def sync_files(path_src, path_dst):
     files_dst = list_files(path_dst)
     
     # Check if the destination directory exists, create it if it doesn't
-    if not files_dst:
-        parent_dir_dst, last_part_dst = os.path.split(path_dst.rstrip('/'))
-        parent_dir_src, last_part_src = os.path.split(path_src.rstrip('/'))
-        mkdir(parent_dir_dst)
-        logger_config.logger.info(f"Creating directory {parent_dir_dst}")
-        if not copy_file(parent_dir_src, parent_dir_dst, last_part_src):
-            logger_config.logger.error(f"Failed to copy {last_part_src} from {parent_dir_src} to {parent_dir_dst}")
-        logger_config.logger.info(f"Copy new directory {parent_dir_dst}")
+    if files_dst is None:
+        mkdir(path_dst)
+        logger_config.logger.info(f"Creating directory {path_dst}")
+        sync_files(path_src, path_dst)
         return
     
     files_dst_dict = {file["name"]: file for file in files_dst}
