@@ -74,8 +74,9 @@ def perform_cache_refresh(tasks):
         logger_config.logger.info(f"Succeed to update alist cache at {path}")
         
     api_alist.copy_clear_succeeded()
-        
-        
+    
+    if not unique_paths:
+        return
     if emby_enable:
         if not api_emby.media_update(unique_paths):
             for file in unique_paths:
