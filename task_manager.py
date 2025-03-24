@@ -4,6 +4,7 @@ import logger_config  # 导入日志配置
 import logging
 import threading
 import queue
+from datetime import datetime
 
 from api_alist import copy_undone, copy_done
 from sync import perform_sync
@@ -118,7 +119,7 @@ def start_checker():
         scheduler.add_job(check_tasks, args=[sync_task, False], trigger=CronTrigger.from_crontab(sync_task.cron))
     scheduler.add_job(check_cache_refresh, trigger=CronTrigger(minute="*"))
     for dir_tree_build_task in dir_tree_build_tasks:
-        scheduler.add_job(check_dir_tree_build, args=[dir_tree_build_task], trigger=CronTrigger.from_crontab(dir_tree_build_task.cron))
+        scheduler.add_job(check_dir_tree_build, args=[dir_tree_build_task], trigger=CronTrigger.from_crontab(dir_tree_build_task.cron), next_run_time=datetime.now())
 
     scheduler.start()
 
