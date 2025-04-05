@@ -35,7 +35,8 @@
             "uuid": "",
             "src": "/115",
             "qps":0.01,
-            "cron": "0 12 * * *"
+            "cron": "0 12 * * *",
+            "run_at_start": true
         }
     ]
 }

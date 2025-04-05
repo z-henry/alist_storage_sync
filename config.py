@@ -47,17 +47,19 @@ webhook_url = config['webhook']['url']
 
 #缓慢加载目录树 配置
 class DirTreeBuildTask:
-    def __init__(self, uuid, src, cron, qps):
+    def __init__(self, uuid, src, cron, qps, run_at_start = False):
         self.uuid = uuid
         self.src = src
         self.cron = cron
         self.qps = qps
+        self.run_at_start = run_at_start
 dir_tree_build_tasks = [
     DirTreeBuildTask(
         task.get('uuid', "dir_tree_build-" + str(index + 1)),  # 如果没有 uuid，就用从 1 开始的 index
         task['src'],
         task['cron'],
-        task['qps']
+        task['qps'],
+        task.get('run_at_start', False)
         )
     for index, task in enumerate(config['dir_tree_build_tasks'])
 ]
