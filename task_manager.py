@@ -119,8 +119,11 @@ def start_checker():
         scheduler.add_job(check_tasks, args=[sync_task, False], trigger=CronTrigger.from_crontab(sync_task.cron))
     scheduler.add_job(check_cache_refresh, trigger=CronTrigger(minute="*"))
     for dir_tree_build_task in dir_tree_build_tasks:
-        next_run = datetime.now() + timedelta(minutes=2) if dir_tree_build_task.run_at_start else None
-        scheduler.add_job(check_dir_tree_build, args=[dir_tree_build_task], trigger=CronTrigger.from_crontab(dir_tree_build_task.cron), next_run_time=next_run)
+        if dir_tree_build_task.run_at_start :
+            next_run = datetime.now() + timedelta(minutes=2)
+            scheduler.add_job(check_dir_tree_build, args=[dir_tree_build_task], trigger=CronTrigger.from_crontab(dir_tree_build_task.cron), next_run_time=next_run)
+        else :
+            scheduler.add_job(check_dir_tree_build, args=[dir_tree_build_task], trigger=CronTrigger.from_crontab(dir_tree_build_task.cron))
 
     scheduler.start()
 
