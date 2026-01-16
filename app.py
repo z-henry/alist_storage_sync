@@ -1,7 +1,15 @@
 from flask import Flask, request, jsonify
-from task_manager import start_checker, infer_dst_path, sync_tasks, check_tasks
+from task_manager import (
+    start_checker,
+    infer_dst_path,
+    sync_tasks,
+    check_tasks,
+    dir_tree_build_tasks,
+    check_dir_tree_build,
+)
 
 from config import Task
+from version import APP_VERSION
 import logger_config  # 导入日志配置
 import os
 import re
@@ -142,7 +150,21 @@ def sync_from_moviepilot(id):
         logger_config.logger.error(f"[sync_from_moviepilot] {msg}")
         return jsonify({"status": "fail", "message": msg}), 400
 
+@app.route('/dir_tree_build', methods=['GET'])
+def run_dir_tree_build_now():
+    try:
+        for task in dir_tree_build_tasks:
+            check_dir_tree_build(task)
+        msg = f"Dir tree build initiated for {len(dir_tree_build_tasks)} tasks"
+        logger_config.logger.info(f"[dir_tree_build_now] {msg}")
+        return jsonify({"status": "success", "message": msg}), 200
+    except Exception as e:
+        msg = f"An error occurred: {e}"
+        logger_config.logger.error(f"[dir_tree_build_now] {msg}")
+        return jsonify({"status": "fail", "message": msg}), 400
+
 if __name__ == "__main__":
+    logger_config.logger.info(f"App version: {APP_VERSION}")
     logger_config.logger.info("Starting task checker...")
     start_checker()
     logger_config.logger.info("Task checker started")
