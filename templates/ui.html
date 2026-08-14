@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="alist_storage_sync 任务运行控制台">
+  <title>任务控制台 · alist_storage_sync</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='ui.css') }}">
+  <script defer src="{{ url_for('static', filename='ui.js') }}"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/ui" aria-label="返回任务概览">
+        <span class="brand-mark">AS</span>
+        <span>
+          <strong>Storage Sync</strong>
+          <small>任务控制台</small>
+        </span>
+      </a>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-view="overview"><span>01</span>运行概览</button>
+        <button class="nav-item" data-view="tasks"><span>02</span>定时任务</button>
+        <button class="nav-item" data-view="runs"><span>03</span>运行记录</button>
+        <button class="nav-item" data-view="requests"><span>04</span>API 请求</button>
+        <button class="nav-item" data-view="callbacks"><span>05</span>回调记录</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span id="sidebar-service-state">正在连接服务</span>
+        <small>{{ app_version }}</small>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="view-eyebrow">OPERATIONS / OVERVIEW</p>
+          <h1 id="view-title">运行概览</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="updated" id="updated-at">尚未刷新</span>
+          <button class="refresh-button" id="refresh-button" type="button">立即刷新</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-overview" aria-labelledby="view-title">
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow">SYSTEM PULSE</p>
+            <h2 id="hero-title">正在读取运行状态</h2>
+            <p id="hero-copy">任务、队列和调度器状态将在这里汇总。</p>
+          </div>
+          <div class="hero-metric">
+            <span id="queue-number">—</span>
+            <small>当前队列</small>
+          </div>
+        </div>
+
+        <div class="metrics" id="metrics"></div>
+
+        <div class="section-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">LATEST ACTIVITY</p>
+              <h2>最近运行</h2>
+            </div>
+            <button class="text-button" type="button" data-jump="runs">查看全部</button>
+          </div>
+          <div class="run-groups" id="recent-runs-groups"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-tasks">
+        <div class="section-intro">
+          <div>
+            <p class="eyebrow">SCHEDULED WORK</p>
+            <h2>从配置载入的任务</h2>
+          </div>
+          <p>展示当前参数、Cron 计划、下次运行和最近一次结果。配置仍以 config.json 为准。</p>
+        </div>
+        <div class="task-grid" id="task-grid"></div>
+      </section>
+
+      <section class="view" id="view-runs">
+        <div class="section-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">EXECUTION HISTORY</p><h2>任务运行记录</h2></div>
+            <div class="run-filters">
+              <select id="run-instance-filter" aria-label="按实例任务筛选运行记录">
+                <option value="">全部实例任务</option>
+              </select>
+              <select id="run-time-filter" aria-label="按时间筛选运行记录">
+                <option value="">全部时间</option>
+                <option value="today">今天</option>
+                <option value="24h">最近 24 小时</option>
+                <option value="7d">最近 7 天</option>
+                <option value="30d">最近 30 天</option>
+              </select>
+              <select id="run-status-filter" aria-label="按状态筛选运行记录">
+                <option value="">全部状态</option>
+                <option value="queued">排队中</option>
+                <option value="running">运行中</option>
+                <option value="waiting_alist">等待 AList</option>
+                <option value="submitted">已提交 AList</option>
+                <option value="succeeded">成功</option>
+                <option value="failed">失败</option>
+                <option value="skipped_busy">忙碌跳过</option>
+                <option value="interrupted">意外中断</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap"><table id="runs-table"></table></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-requests">
+        <div class="section-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">INBOUND EVENTS</p><h2>API 请求记录</h2></div>
+            <p>敏感字段会在写入前脱敏。</p>
+          </div>
+          <div class="table-wrap"><table id="requests-table"></table></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-callbacks">
+        <div class="section-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">OUTBOUND NOTIFICATIONS</p><h2>Emby 与 Webhook 回调</h2></div>
+            <p>目标地址的查询参数不会保存。</p>
+          </div>
+          <div class="table-wrap"><table id="callbacks-table"></table></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="detail-dialog">
+    <div class="dialog-heading">
+      <div><p class="eyebrow">RECORD DETAIL</p><h2 id="detail-title">记录详情</h2></div>
+      <button id="dialog-close" class="icon-button" aria-label="关闭详情">×</button>
+    </div>
+    <pre id="detail-content"></pre>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

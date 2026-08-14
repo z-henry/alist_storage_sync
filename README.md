@@ -25,6 +25,22 @@
 
 ## 部署
 
+### 本机构建 Docker 镜像
+
+项目根目录的 `build.sh` 会读取 `version.py` 并同时生成版本标签和 `latest` 标签：
+
+```sh
+./build.sh
+# alist-storage-sync:1.13.0
+# alist-storage-sync:latest
+```
+
+可以通过环境变量修改镜像名：
+
+```sh
+IMAGE_NAME=myrepo/alist-storage-sync ./build.sh
+```
+
 ### Docker 部署
 
 在使用 Docker 部署 `alist_storage_sync` 前，请确保已经创建好 `config.json` 并放置在合适的路径。
@@ -75,6 +91,35 @@
    ```sh
    python app.py
    ```
+
+## 浏览器任务控制台
+
+应用启动后访问 `http://<服务器地址>:8115/ui`，可以查看定时任务、运行参数与结果、API 请求以及 Emby/Webhook 回调记录。
+
+运行概览会按具体实例任务（例如某个同步实例、`cache-refresh` 或某个目录树刷新实例）折叠父任务，并在实例标题展示最近执行时间；展开父任务后按需加载对应的 AList 文件子任务。运行记录页面平铺父任务，并支持按实例任务、时间范围和状态筛选。子任务每次加载 100 条，可继续分页加载。
+
+同步运行会保存 `/api/fs/copy` 返回的 AList/OpenList task ID，并在控制台中展示关联子任务的数量、进度和结果。只有所有文件复制子任务成功，父同步任务才会标记为成功；任一子任务失败或取消，父任务会标记为失败。为避免目录复制动态生成无法关联的内部任务，目录由本程序逐级创建，文件则逐个提交复制。
+
+此版本只支持新版任务 API（`/api/task/copy/*`）以及复制响应中的 `data.tasks[].id`，不兼容旧版 AList 任务接口。
+
+控制台默认关闭，必须设置密码后才能访问：
+
+```sh
+export UI_USERNAME=admin
+export UI_PASSWORD='请设置一个强密码'
+python app.py
+```
+
+Docker Compose 用户可以在同目录的 `.env` 中设置：
+
+```env
+UI_USERNAME=admin
+UI_PASSWORD=请设置一个强密码
+```
+
+运行历史保存在 `/app/data/runtime.db`。使用容器部署时应持久化挂载 `/app/data`；请求中的密码、Token、API Key 等字段会在入库前脱敏。
+
+Basic Auth 只负责身份校验，不加密传输内容；跨主机或公网访问时，请在应用前配置 HTTPS 反向代理。
 
 ## 贡献
 

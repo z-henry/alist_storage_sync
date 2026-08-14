@@ -1,17 +1,44 @@
+from time import perf_counter
+
 import requests
-import json
-import logger_config  # 导入日志配置
-from config import emby_apikey, emby_url, emby_mount_path
+
+from config import emby_apikey, emby_mount_path, emby_url
+
 
 headers = {
     "X-Emby-Token": emby_apikey,
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
 }
 
 
+def media_update_detail(paths):
+    payload = {"Updates": [{"Path": emby_mount_path + path} for path in paths]}
+    started = perf_counter()
+    try:
+        response = requests.post(
+            f"{emby_url}/emby/Library/Media/Updated",
+            json=payload,
+            headers=headers,
+        )
+        return {
+            "success": response.status_code in (200, 204),
+            "status_code": response.status_code,
+            "duration_ms": round((perf_counter() - started) * 1000),
+            "response": response.text[:2000] if response.text else None,
+            "error": None,
+            "payload": payload,
+        }
+    except requests.RequestException as error:
+        return {
+            "success": False,
+            "status_code": None,
+            "duration_ms": round((perf_counter() - started) * 1000),
+            "response": None,
+            "error": str(error),
+            "payload": payload,
+        }
+
+
 def media_update(paths):
-    response = requests.post(
-        f"{emby_url}/emby/Library/Media/Updated", 
-        json={"Updates": [{"Path": emby_mount_path + path} for path in paths]},
-        headers=headers)
+    return media_update_detail(paths)["success"]
     return response.status_code == 200 or response.status_code == 204

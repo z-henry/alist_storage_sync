@@ -11,7 +11,9 @@ class Task:
         self.mounted_path = mounted_path
 
 # 加载配置文件
-config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+config_path = os.environ.get(
+    "CONFIG_PATH", os.path.join(os.path.dirname(__file__), "config.json")
+)
 with open(config_path, 'r',encoding='utf8') as f:
     config = json.load(f)
 

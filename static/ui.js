@@ -1,0 +1,679 @@
+const labels = {
+  queued: "排队中",
+  running: "运行中",
+  waiting_alist: "等待 AList",
+  submitted: "已提交 AList",
+  succeeded: "成功",
+  failed: "失败",
+  skipped_busy: "忙碌跳过",
+  interrupted: "意外中断",
+  scheduled: "定时触发",
+  api: "API 触发",
+  sync: "存储同步",
+  cache_refresh: "缓存与回调",
+  dir_tree_build: "目录树刷新",
+};
+
+const viewMeta = {
+  overview: ["OPERATIONS / OVERVIEW", "运行概览"],
+  tasks: ["OPERATIONS / SCHEDULES", "定时任务"],
+  runs: ["OPERATIONS / RUNS", "运行记录"],
+  requests: ["OPERATIONS / INBOUND", "API 请求"],
+  callbacks: ["OPERATIONS / OUTBOUND", "回调记录"],
+};
+
+let currentView = "overview";
+let refreshing = false;
+const expandedRunIds = new Set();
+const expandedOverviewGroups = new Set();
+const runDetailCache = new Map();
+const runDetailRequests = new Map();
+const childPageSize = 100;
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function label(value) {
+  return labels[value] || value || "—";
+}
+
+function instanceKey(taskType, taskUuid) {
+  return JSON.stringify([taskType, String(taskUuid)]);
+}
+
+function parseInstanceKey(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.length === 2 ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function instanceLabel(taskType, taskUuid) {
+  if (taskType === "sync") return `同步任务 · ${taskUuid}`;
+  if (taskType === "cache_refresh") return `缓存与回调 · ${taskUuid}`;
+  if (taskType === "dir_tree_build") return `目录树刷新 · ${taskUuid}`;
+  return `${label(taskType)} · ${taskUuid}`;
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).format(date);
+}
+
+function duration(record) {
+  if (!record.started_at) return "—";
+  const end = record.finished_at ? new Date(record.finished_at) : new Date();
+  const milliseconds = end - new Date(record.started_at);
+  if (milliseconds < 1000) return `${Math.max(0, milliseconds)} ms`;
+  if (milliseconds < 60000) return `${(milliseconds / 1000).toFixed(1)} s`;
+  return `${(milliseconds / 60000).toFixed(1)} min`;
+}
+
+function formatBytes(value) {
+  if (value == null) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = Number(value);
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function statusNode(status) {
+  return el("span", `status ${status || ""}`, label(status));
+}
+
+function showDetail(title, data) {
+  document.getElementById("detail-title").textContent = title;
+  document.getElementById("detail-content").textContent = JSON.stringify(data, null, 2);
+  document.getElementById("detail-dialog").showModal();
+}
+
+function showToast(message) {
+  const toast = document.getElementById("toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+  window.setTimeout(() => toast.classList.remove("show"), 3500);
+}
+
+async function getJson(url) {
+  const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+function renderTable(targetId, columns, rows, detailTitle, detailLoader = null) {
+  const table = document.getElementById(targetId);
+  table.replaceChildren();
+  const thead = el("thead");
+  const headerRow = el("tr");
+  columns.forEach((column) => headerRow.append(el("th", "", column.title)));
+  thead.append(headerRow);
+  table.append(thead);
+
+  const tbody = el("tbody");
+  if (!rows.length) {
+    const row = el("tr");
+    const cell = el("td", "empty", "暂无记录");
+    cell.colSpan = columns.length;
+    row.append(cell);
+    tbody.append(row);
+  } else {
+    rows.forEach((item) => {
+      const row = el("tr");
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      const openDetail = async () => {
+        try {
+          const detail = detailLoader ? await detailLoader(item) : item;
+          showDetail(detailTitle(item), detail);
+        } catch (error) {
+          showToast(`读取详情失败：${error.message}`);
+        }
+      };
+      row.addEventListener("click", openDetail);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") openDetail();
+      });
+      columns.forEach((column) => {
+        const cell = el("td");
+        const value = column.render(item);
+        if (value instanceof Node) cell.append(value);
+        else cell.textContent = value ?? "—";
+        row.append(cell);
+      });
+      tbody.append(row);
+    });
+  }
+  table.append(tbody);
+}
+
+function runNameCell(run) {
+  const wrap = el("div");
+  wrap.append(el("span", "primary-cell", run.task_uuid));
+  wrap.append(el("span", "secondary", `${label(run.task_type)} · ${label(run.trigger_type)}`));
+  return wrap;
+}
+
+function alistTaskCell(run) {
+  const summary = run.alist_task_summary;
+  if (!summary) return "—";
+  const completed = summary.succeeded + summary.failed;
+  const progress = summary.progress == null ? "" : ` · ${summary.progress.toFixed(1)}%`;
+  return `${completed}/${summary.total}${progress}`;
+}
+
+function childStatus(task) {
+  if (task.state === 2) return ["succeeded", "成功"];
+  if (task.state === 4) return ["failed", "已取消"];
+  if (task.state === 7) return ["failed", "失败"];
+  if (task.state === 0) return ["queued", "等待中"];
+  return ["running", task.status || "运行中"];
+}
+
+function childProgress(task) {
+  const value = typeof task.progress === "number" ? Math.max(0, Math.min(task.progress, 100)) : 0;
+  const wrap = el("div", "child-progress");
+  const track = el("span", "child-progress-track");
+  const fill = el("span", "child-progress-fill");
+  fill.style.width = `${value}%`;
+  track.append(fill);
+  wrap.append(track, el("small", "", `${value.toFixed(1)}%`));
+  return wrap;
+}
+
+function childPanelTargets(runId) {
+  return [...document.querySelectorAll("[data-run-children]")]
+    .filter((node) => node.dataset.runChildren === runId);
+}
+
+function renderRunChildren(panel, detail) {
+  panel.replaceChildren();
+  const summary = detail.alist_task_summary;
+  const toolbar = el("div", "child-toolbar");
+  const copy = summary
+    ? `成功 ${summary.succeeded} · 失败 ${summary.failed} · 等待 ${summary.pending} · 共 ${summary.total}`
+    : "该父任务没有 AList 文件子任务";
+  toolbar.append(el("span", "child-summary", copy));
+  const detailButton = el("button", "text-button", "查看父任务参数与结果");
+  detailButton.type = "button";
+  detailButton.addEventListener("click", () => {
+    const { alist_tasks: _alistTasks, ...parentDetail } = detail;
+    showDetail(`运行详情 · ${detail.task_uuid}`, parentDetail);
+  });
+  toolbar.append(detailButton);
+  panel.append(toolbar);
+
+  const tasks = detail.alist_tasks || [];
+  if (!tasks.length) {
+    panel.append(el("div", "child-empty", "暂无子任务记录"));
+    return;
+  }
+
+  const wrap = el("div", "table-wrap child-table-wrap");
+  const table = el("table", "child-table");
+  const thead = el("thead");
+  const header = el("tr");
+  ["文件", "状态", "进度", "大小", "错误"].forEach((title) => header.append(el("th", "", title)));
+  thead.append(header);
+  table.append(thead);
+  const tbody = el("tbody");
+  tasks.forEach((task) => {
+    const row = el("tr");
+    const name = el("td");
+    name.append(
+      el("span", "primary-cell", task.entry_name || task.name || task.alist_task_id),
+      el("span", "secondary", `${task.source_dir || "—"} → ${task.destination_dir || "—"}`),
+    );
+    const state = el("td");
+    const [stateClass, stateLabel] = childStatus(task);
+    state.append(statusNode(stateClass));
+    state.querySelector(".status").textContent = stateLabel;
+    const progress = el("td");
+    progress.append(childProgress(task));
+    row.append(
+      name,
+      state,
+      progress,
+      el("td", "", formatBytes(task.total_bytes)),
+      el("td", task.error ? "child-error" : "", task.error || "—"),
+    );
+    tbody.append(row);
+  });
+  table.append(tbody);
+  wrap.append(table);
+  panel.append(wrap);
+
+  if (detail.alist_tasks_page?.truncated) {
+    const more = el("button", "load-more", `继续加载（已显示 ${tasks.length}/${detail.alist_tasks_page.total}）`);
+    more.type = "button";
+    more.addEventListener("click", () => loadRunDetail(detail.run_id, true));
+    panel.append(more);
+  }
+}
+
+function updateRunChildPanels(runId) {
+  const detail = runDetailCache.get(runId);
+  if (!detail) return;
+  childPanelTargets(runId).forEach((panel) => renderRunChildren(panel, detail));
+}
+
+async function loadRunDetail(runId, loadMore = false) {
+  if (!loadMore && runDetailRequests.has(runId)) return runDetailRequests.get(runId);
+  const existing = runDetailCache.get(runId);
+  const existingCount = existing?.alist_tasks?.length || 0;
+  const offset = loadMore ? existingCount : 0;
+  const limit = loadMore ? childPageSize : Math.max(childPageSize, Math.min(existingCount, 1000));
+  if (existing && !loadMore) updateRunChildPanels(runId);
+  childPanelTargets(runId).forEach((panel) => {
+    if (!existing || loadMore) panel.textContent = loadMore ? "正在加载更多子任务…" : "正在加载子任务…";
+  });
+
+  const request = getJson(
+    `/ui/api/runs/${encodeURIComponent(runId)}?limit=${limit}&offset=${offset}`,
+  ).then(({ run }) => {
+    if (loadMore && existing) {
+      const mergedTasks = [...(existing.alist_tasks || []), ...(run.alist_tasks || [])];
+      run.alist_tasks = mergedTasks;
+      run.alist_tasks_page = {
+        ...run.alist_tasks_page,
+        offset: 0,
+        returned: mergedTasks.length,
+        truncated: mergedTasks.length < run.alist_tasks_page.total,
+      };
+    } else if (existing && existingCount > (run.alist_tasks || []).length) {
+      const refreshedCount = (run.alist_tasks || []).length;
+      const preservedTasks = (existing.alist_tasks || []).slice(
+        refreshedCount,
+        run.alist_tasks_page.total,
+      );
+      run.alist_tasks = [...(run.alist_tasks || []), ...preservedTasks];
+      run.alist_tasks_page = {
+        ...run.alist_tasks_page,
+        offset: 0,
+        returned: run.alist_tasks.length,
+        truncated: run.alist_tasks.length < run.alist_tasks_page.total,
+      };
+    }
+    runDetailCache.set(runId, run);
+    updateRunChildPanels(runId);
+    return run;
+  }).catch((error) => {
+    childPanelTargets(runId).forEach((panel) => {
+      panel.textContent = `子任务加载失败：${error.message}`;
+    });
+    throw error;
+  }).finally(() => runDetailRequests.delete(runId));
+
+  if (!loadMore) runDetailRequests.set(runId, request);
+  return request;
+}
+
+function renderRunsTable(target, runs) {
+  const table = typeof target === "string" ? document.getElementById(target) : target;
+  table.replaceChildren();
+  const thead = el("thead");
+  const header = el("tr");
+  ["", "任务", "状态", "AList 子任务", "进入队列", "耗时", "运行 ID"]
+    .forEach((title) => header.append(el("th", "", title)));
+  thead.append(header);
+  table.append(thead);
+  const tbody = el("tbody");
+
+  if (!runs.length) {
+    const row = el("tr");
+    const cell = el("td", "empty", "暂无运行记录");
+    cell.colSpan = 7;
+    row.append(cell);
+    tbody.append(row);
+  }
+
+  runs.forEach((run) => {
+    const expanded = expandedRunIds.has(run.run_id);
+    const row = el("tr", "run-parent-row");
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-expanded", String(expanded));
+    const toggleCell = el("td", "toggle-cell");
+    const toggleButton = el("button", "fold-button", expanded ? "▼" : "▶");
+    toggleButton.type = "button";
+    toggleButton.setAttribute("aria-label", expanded ? "收起子任务" : "展开子任务");
+    toggleCell.append(toggleButton);
+    const name = el("td");
+    name.append(runNameCell(run));
+    const state = el("td");
+    state.append(statusNode(run.status));
+    row.append(
+      toggleCell,
+      name,
+      state,
+      el("td", "", alistTaskCell(run)),
+      el("td", "", formatDate(run.created_at)),
+      el("td", "", duration(run)),
+      el("td", "run-id", run.run_id.slice(0, 8)),
+    );
+
+    const childRow = el("tr", "run-child-row");
+    childRow.hidden = !expanded;
+    const childCell = el("td", "run-child-cell");
+    childCell.colSpan = 7;
+    const panel = el("div", "run-children-panel");
+    panel.dataset.runChildren = run.run_id;
+    childCell.append(panel);
+    childRow.append(childCell);
+
+    const toggle = () => {
+      const shouldExpand = !expandedRunIds.has(run.run_id);
+      if (shouldExpand) expandedRunIds.add(run.run_id);
+      else expandedRunIds.delete(run.run_id);
+      row.setAttribute("aria-expanded", String(shouldExpand));
+      toggleButton.textContent = shouldExpand ? "▼" : "▶";
+      toggleButton.setAttribute("aria-label", shouldExpand ? "收起子任务" : "展开子任务");
+      childRow.hidden = !shouldExpand;
+      if (shouldExpand) loadRunDetail(run.run_id);
+    };
+    toggleButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggle();
+    });
+    row.addEventListener("click", toggle);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
+    });
+    tbody.append(row, childRow);
+    if (expanded) queueMicrotask(() => loadRunDetail(run.run_id));
+  });
+  table.append(tbody);
+}
+
+function renderOverviewRunGroups(runs) {
+  const container = document.getElementById("recent-runs-groups");
+  container.replaceChildren();
+  if (!runs.length) {
+    container.append(el("div", "empty", "暂无运行记录"));
+    return;
+  }
+  const groups = new Map();
+  runs.forEach((run) => {
+    const key = instanceKey(run.task_type, run.task_uuid);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        taskType: run.task_type,
+        taskUuid: run.task_uuid,
+        runs: [],
+      });
+    }
+    groups.get(key).runs.push(run);
+  });
+  const order = ["sync", "cache_refresh", "dir_tree_build"];
+  [...groups.entries()].sort(([, a], [, b]) => {
+    const ai = order.indexOf(a.taskType);
+    const bi = order.indexOf(b.taskType);
+    const typeOrder = (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    return typeOrder || String(a.taskUuid).localeCompare(String(b.taskUuid), "zh-CN");
+  }).forEach(([key, group]) => {
+    const groupRuns = group.runs;
+    const details = el("details", "run-group");
+    details.open = expandedOverviewGroups.has(key);
+    const summary = el("summary", "run-group-summary");
+    const title = el(
+      "span",
+      "run-group-title",
+      instanceLabel(group.taskType, group.taskUuid),
+    );
+    const latestCreatedAt = groupRuns.reduce(
+      (latest, run) => (!latest || run.created_at > latest ? run.created_at : latest),
+      "",
+    );
+    const failed = groupRuns.filter((run) => run.status === "failed").length;
+    const waiting = groupRuns.filter((run) => ["queued", "running", "waiting_alist"].includes(run.status)).length;
+    summary.append(
+      title,
+      el(
+        "span",
+        "run-group-meta",
+        `${groupRuns.length} 个父任务 · 最近执行 ${formatDate(latestCreatedAt)} · 等待 ${waiting} · 失败 ${failed}`,
+      ),
+    );
+    details.append(summary);
+    const wrap = el("div", "table-wrap");
+    const table = el("table");
+    wrap.append(table);
+    details.append(wrap);
+    details.addEventListener("toggle", () => {
+      if (details.open) expandedOverviewGroups.add(key);
+      else expandedOverviewGroups.delete(key);
+    });
+    container.append(details);
+    renderRunsTable(table, groupRuns);
+  });
+}
+
+function populateRunInstanceFilter(configuredTasks, recentRuns) {
+  const select = document.getElementById("run-instance-filter");
+  const current = select.value;
+  const instances = new Map();
+  (configuredTasks || []).forEach((task) => {
+    const key = instanceKey(task.task_type, task.task_uuid);
+    instances.set(key, task.name || instanceLabel(task.task_type, task.task_uuid));
+  });
+  (recentRuns || []).forEach((run) => {
+    const key = instanceKey(run.task_type, run.task_uuid);
+    if (!instances.has(key)) {
+      instances.set(key, instanceLabel(run.task_type, run.task_uuid));
+    }
+  });
+
+  select.replaceChildren();
+  const all = el("option", "", "全部实例任务");
+  all.value = "";
+  select.append(all);
+  [...instances.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], "zh-CN"))
+    .forEach(([key, name]) => {
+      const option = el("option", "", name);
+      option.value = key;
+      select.append(option);
+    });
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+function renderOverview(data) {
+  const runtime = data.runtime;
+  const healthy = runtime.scheduler_running && runtime.worker_alive;
+  const liveDot = document.querySelector(".live-dot");
+  liveDot.className = `live-dot ${healthy ? "healthy" : "error"}`;
+  document.getElementById("sidebar-service-state").textContent = healthy ? "服务运行正常" : "服务状态异常";
+  document.getElementById("hero-title").textContent = healthy ? "调度器与工作线程运行正常" : "服务组件需要检查";
+  document.getElementById("hero-copy").textContent = healthy
+    ? `已载入 ${runtime.scheduler_jobs.length} 个调度计划，最近记录会自动刷新。`
+    : "调度器或工作线程尚未启动，请检查应用启动日志。";
+  document.getElementById("queue-number").textContent = runtime.queue_size;
+
+  const counts = data.counts.runs_today || {};
+  const metrics = [
+    ["等待 AList", (counts.waiting_alist || 0) + (counts.submitted || 0), "仍有复制子任务未结束"],
+    ["今日成功", counts.succeeded || 0, "本地任务完整结束"],
+    ["今日失败", counts.failed || 0, "需要查看错误详情"],
+    ["回调失败", data.counts.callback_failures_today || 0, "Emby 与 Webhook"],
+  ];
+  const container = document.getElementById("metrics");
+  container.replaceChildren();
+  metrics.forEach(([title, value, hint]) => {
+    const card = el("article", "metric-card");
+    card.append(el("span", "", title), el("strong", "", value), el("small", "", hint));
+    container.append(card);
+  });
+  renderOverviewRunGroups(data.recent_runs || []);
+}
+
+function renderTasks(data) {
+  const grid = document.getElementById("task-grid");
+  grid.replaceChildren();
+  (data.tasks || []).forEach((task) => {
+    const card = el("article", "task-card");
+    const head = el("div", "task-card-head");
+    const title = el("div");
+    title.append(el("span", "task-type", label(task.task_type)), el("h3", "", task.name));
+    head.append(title, el("code", "task-schedule", task.schedule));
+    card.append(head);
+
+    const params = el("div", "task-params");
+    const entries = Object.entries(task.parameters || {});
+    if (!entries.length) entries.push(["说明", "每分钟检查 AList 已完成复制"]);
+    entries.forEach(([key, value]) => {
+      const row = el("div", "param-row");
+      row.append(el("span", "", key), el("code", "", typeof value === "object" ? JSON.stringify(value) : value));
+      params.append(row);
+    });
+    card.append(params);
+
+    const footer = el("div", "task-footer");
+    const next = el("span", "", `下次：${formatDate(task.next_run_time)}`);
+    const latest = task.last_run ? statusNode(task.last_run.status) : statusNode("");
+    if (!task.last_run) latest.textContent = "尚未运行";
+    footer.append(next, latest);
+    card.append(footer);
+    card.addEventListener("click", () => showDetail(`任务详情 · ${task.task_uuid}`, task));
+    grid.append(card);
+  });
+}
+
+function renderRequests(data) {
+  renderTable(
+    "requests-table",
+    [
+      { title: "入口", render: (item) => {
+        const wrap = el("div");
+        wrap.append(el("span", "primary-cell", item.route), el("span", "secondary", item.method));
+        return wrap;
+      } },
+      { title: "任务", render: (item) => item.task_uuid || "—" },
+      { title: "HTTP", render: (item) => item.status_code || "处理中" },
+      { title: "产生运行", render: (item) => item.run_count },
+      { title: "接收时间", render: (item) => formatDate(item.received_at) },
+    ],
+    data.requests || [],
+    (item) => `API 请求 · ${item.route}`,
+  );
+}
+
+function renderCallbacks(data) {
+  renderTable(
+    "callbacks-table",
+    [
+      { title: "服务", render: (item) => {
+        const wrap = el("div");
+        wrap.append(el("span", "primary-cell", item.service), el("span", "secondary", item.target || "—"));
+        return wrap;
+      } },
+      { title: "状态", render: (item) => statusNode(item.status) },
+      { title: "HTTP", render: (item) => item.status_code || "—" },
+      { title: "耗时", render: (item) => item.duration_ms == null ? "—" : `${item.duration_ms} ms` },
+      { title: "调用时间", render: (item) => formatDate(item.created_at) },
+    ],
+    data.callbacks || [],
+    (item) => `回调详情 · ${item.service}`,
+  );
+}
+
+function selectedTimeStart(value) {
+  const now = new Date();
+  if (value === "today") {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  }
+  const durations = {
+    "24h": 24 * 60 * 60 * 1000,
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+  };
+  return durations[value] ? new Date(now.getTime() - durations[value]).toISOString() : "";
+}
+
+async function refreshAll() {
+  if (refreshing) return;
+  refreshing = true;
+  const button = document.getElementById("refresh-button");
+  button.disabled = true;
+  button.textContent = "刷新中";
+  try {
+    const statusFilter = document.getElementById("run-status-filter").value;
+    const instanceFilter = parseInstanceKey(
+      document.getElementById("run-instance-filter").value,
+    );
+    const timeStart = selectedTimeStart(document.getElementById("run-time-filter").value);
+    const runQuery = new URLSearchParams({ limit: "100" });
+    if (statusFilter) runQuery.set("status", statusFilter);
+    if (instanceFilter) {
+      runQuery.set("task_type", instanceFilter[0]);
+      runQuery.set("task_uuid", instanceFilter[1]);
+    }
+    if (timeStart) runQuery.set("created_from", timeStart);
+    const [overview, tasks, runs, requests, callbacks] = await Promise.all([
+      getJson("/ui/api/overview"),
+      getJson("/ui/api/tasks"),
+      getJson(`/ui/api/runs?${runQuery.toString()}`),
+      getJson("/ui/api/requests?limit=100"),
+      getJson("/ui/api/callbacks?limit=100"),
+    ]);
+    populateRunInstanceFilter(tasks.tasks, overview.recent_runs);
+    renderOverview(overview);
+    renderTasks(tasks);
+    renderRunsTable("runs-table", runs.runs || []);
+    renderRequests(requests);
+    renderCallbacks(callbacks);
+    document.getElementById("updated-at").textContent = `更新于 ${new Date().toLocaleTimeString("zh-CN")}`;
+  } catch (error) {
+    document.querySelector(".live-dot").className = "live-dot error";
+    document.getElementById("sidebar-service-state").textContent = "连接失败";
+    showToast(`刷新失败：${error.message}`);
+  } finally {
+    refreshing = false;
+    button.disabled = false;
+    button.textContent = "立即刷新";
+  }
+}
+
+function switchView(view) {
+  if (!viewMeta[view]) return;
+  currentView = view;
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
+  document.querySelectorAll(".view").forEach((item) => item.classList.toggle("active", item.id === `view-${view}`));
+  document.getElementById("view-eyebrow").textContent = viewMeta[view][0];
+  document.getElementById("view-title").textContent = viewMeta[view][1];
+  window.history.replaceState(null, "", `#${view}`);
+}
+
+document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
+document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.jump)));
+document.getElementById("refresh-button").addEventListener("click", refreshAll);
+document.getElementById("run-status-filter").addEventListener("change", refreshAll);
+document.getElementById("run-instance-filter").addEventListener("change", refreshAll);
+document.getElementById("run-time-filter").addEventListener("change", refreshAll);
+document.getElementById("dialog-close").addEventListener("click", () => document.getElementById("detail-dialog").close());
+document.getElementById("detail-dialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+const initialView = window.location.hash.slice(1);
+if (viewMeta[initialView]) switchView(initialView);
+refreshAll();
+window.setInterval(refreshAll, 5000);

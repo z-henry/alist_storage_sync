@@ -1,97 +1,137 @@
-import re
-import api_emby
-import api_alist
-import api_webhook
-from config import emby_enable, webhook_enable
-import logger_config  # 导入日志配置
 import os
+import posixpath
+import re
 from time import sleep
 
-def get_path(tasks):
-    # 筛选出 status 为 "getting src object" 的项目
-    filtered_data = [task for task in tasks if task['status'] == 'getting src object']
-    
-    # 正则表达式模式
-    pattern = r'^copy \[(.*)\]\((.*)\)\sto\s\[(.*)\]\((.*)\)$'
-    
-    # 提取路径并去重
-    path_mapping = {}
-    for item in filtered_data:
-        match = re.match(pattern, item['name'])
-        if match:
-            path1 = match.group(3)
-            path2 = match.group(4)
-            key = path1 + path2
-            # 提取$2中最后一个/之后的字符串
-            source_path = match.group(2)
-            last_part = source_path.split('/')[-1]
-            path_mapping[key] = last_part
+import api_alist
+import api_emby
+import api_webhook
+import logger_config
+import runtime_store
+from config import emby_enable, emby_url, webhook_enable, webhook_url
 
-    # 转换为列表
-    return [k + "/" + v for k, v in path_mapping.items()]
+
+def get_path(tasks):
+    pattern = r'^copy \[(.*)\]\((.*)\)\sto\s\[(.*)\]\((.*)\)$'
+
+    paths = []
+    for item in tasks:
+        match = re.match(pattern, item.get("name", ""))
+        if match:
+            destination_mount = match.group(3)
+            destination_path = match.group(4)
+            source_name = posixpath.basename(match.group(2))
+            paths.append(
+                posixpath.join(
+                    destination_mount,
+                    destination_path.lstrip("/"),
+                    source_name,
+                )
+            )
+    return list(dict.fromkeys(paths))
+
 
 def recursive_refresh_cache(path) -> bool:
-    # 递归获取文件列表,由深到浅来刷新文件夹缓存
-    # 循环每次去掉最后一个斜杠及其之后的部分
-    tmp_path= path
-    refresh_succeed = False
+    tmp_path = path
     while tmp_path:
-        # 找到最后一个斜杠的位置，截取到最后一个斜杠之前的部分
-        last_slash_index = tmp_path.rfind('/')
+        last_slash_index = tmp_path.rfind("/")
         if last_slash_index == -1:
             break
         tmp_path = tmp_path[:last_slash_index]
+        files = api_alist.list_files(tmp_path, True)
+        if files is not None:
+            return True
+    return False
 
-        if api_alist.list_files(tmp_path, True):
-            refresh_succeed = True
-            break
-    return refresh_succeed
 
-# 全量刷新
 def recursive_refresh_cache_all(path, delay) -> int:
-    count = 1  # 初始值为1，因为当前路径调用了一次 list_files
+    count = 1
     files_src = api_alist.list_files(path, True)
     logger_config.logger.info(f"refresh dir {path}")
     sleep(delay)
-    
-    if files_src is None:
-        return count  # 直接返回当前计数
-    
-    for file_src in files_src:
-        if file_src["is_dir"] == True:
-            # 递归调用并累加返回的调用次数
-            count += recursive_refresh_cache_all(os.path.join(path, file_src["name"]), delay)
-    
-    return count  # 返回总计数
 
-def perform_cache_refresh(tasks):
+    if files_src is None:
+        return count
+
+    for file_src in files_src:
+        if file_src["is_dir"] is True:
+            count += recursive_refresh_cache_all(
+                os.path.join(path, file_src["name"]), delay
+            )
+    return count
+
+
+def _record_callback(service, target, detail, run_id):
+    callback_id = runtime_store.record_callback(
+        service=service,
+        target=target,
+        request_payload=detail.get("payload"),
+        success=detail.get("success", False),
+        response=detail.get("response"),
+        status_code=detail.get("status_code"),
+        duration_ms=detail.get("duration_ms"),
+        error=detail.get("error"),
+        run_id=run_id,
+    )
+    return {
+        "callback_id": callback_id,
+        "service": service,
+        "success": detail.get("success", False),
+        "status_code": detail.get("status_code"),
+        "duration_ms": detail.get("duration_ms"),
+        "error": detail.get("error"),
+    }
+
+
+def perform_cache_refresh(tasks, run_id=None):
     unique_paths = get_path(tasks)
-    
+    result = {
+        "success": True,
+        "refreshed_paths": [],
+        "failed_paths": [],
+        "callbacks": [],
+        "cleared_succeeded_tasks": False,
+    }
+
     for path in unique_paths:
-        if not recursive_refresh_cache(path):
+        if recursive_refresh_cache(path):
+            result["refreshed_paths"].append(path)
+            logger_config.logger.info(f"Succeed to update alist cache at {path}")
+        else:
+            result["success"] = False
+            result["failed_paths"].append(path)
             logger_config.logger.error(f"Failed to update alist cache at {path}")
-            return
-        logger_config.logger.info(f"Succeed to update alist cache at {path}")
-        
-    api_alist.copy_clear_succeeded()
-    
-    if not unique_paths:
-        return
+
+    succeeded_task_ids = [
+        task.get("id")
+        for task in tasks
+        if task.get("state") == 2 and task.get("id")
+    ]
+    result["cleared_succeeded_tasks"] = api_alist.copy_delete_tasks(succeeded_task_ids)
+    if not result["cleared_succeeded_tasks"]:
+        result["success"] = False
+
+    if not unique_paths or result["failed_paths"]:
+        return result
+
     if emby_enable:
-        if not api_emby.media_update(unique_paths):
-            for file in unique_paths:
-                logger_config.logger.error(f"Failed to update emby at {file}")
-            return 
-        else:
-            for file in unique_paths:
-                logger_config.logger.info(f"Succeed to update emby at {file}")
-                
+        detail = api_emby.media_update_detail(unique_paths)
+        callback = _record_callback("emby", emby_url, detail, run_id)
+        result["callbacks"].append(callback)
+        if not detail["success"]:
+            result["success"] = False
+            logger_config.logger.error("Failed to notify Emby")
+            return result
+        logger_config.logger.info("Succeed to notify Emby")
+
     if webhook_enable:
-        if not api_webhook.media_update(unique_paths):
-            for file in unique_paths:
-                logger_config.logger.error(f"Failed to call webhook at {file}")
-            return 
-        else:
-            for file in unique_paths:
-                logger_config.logger.info(f"Succeed to call webhook at {file}")
-                
+        detail = api_webhook.media_update_detail(unique_paths)
+        callback = _record_callback("webhook", webhook_url, detail, run_id)
+        result["callbacks"].append(callback)
+        if not detail["success"]:
+            result["success"] = False
+            logger_config.logger.error("Failed to call webhook")
+            return result
+        logger_config.logger.info("Succeed to call webhook")
+
+    return result
