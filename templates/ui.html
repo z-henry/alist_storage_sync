@@ -25,6 +25,7 @@
         <button class="nav-item" data-view="runs"><span>03</span>运行记录</button>
         <button class="nav-item" data-view="requests"><span>04</span>API 请求</button>
         <button class="nav-item" data-view="callbacks"><span>05</span>回调记录</button>
+        <button class="nav-item" data-view="config"><span>06</span>配置管理</button>
       </nav>
 
       <div class="sidebar-footer">
@@ -79,7 +80,7 @@
             <p class="eyebrow">SCHEDULED WORK</p>
             <h2>从配置载入的任务</h2>
           </div>
-          <p>展示当前参数、Cron 计划、下次运行和最近一次结果。配置仍以 config.json 为准。</p>
+          <p>展示当前参数、Cron 计划、下次运行和最近一次结果；可在“配置管理”中在线修改。</p>
         </div>
         <div class="task-grid" id="task-grid"></div>
       </section>
@@ -108,6 +109,7 @@
                 <option value="succeeded">成功</option>
                 <option value="failed">失败</option>
                 <option value="skipped_busy">忙碌跳过</option>
+                <option value="skipped_unavailable">AList 不可用</option>
                 <option value="interrupted">意外中断</option>
               </select>
             </div>
@@ -133,6 +135,34 @@
             <p>目标地址的查询参数不会保存。</p>
           </div>
           <div class="table-wrap"><table id="callbacks-table"></table></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-config">
+        <div class="section-card config-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">RUNTIME CONFIGURATION</p>
+              <h2>配置管理</h2>
+            </div>
+            <div class="config-actions">
+              <button class="text-button" id="config-reload" type="button">重新载入</button>
+              <button class="refresh-button" id="alist-recheck" type="button">检测 AList</button>
+              <button class="save-button" id="config-save" type="button">保存并应用</button>
+            </div>
+          </div>
+          <div class="config-body">
+            <div class="config-notice">
+              <strong>保存后立即生效</strong>
+              <span>将校验 JSON、Cron 和必填参数，写回当前 CONFIG_PATH，并重建后续调度。已排队或正在执行的任务不会修改。</span>
+            </div>
+            <label for="config-editor">config.json</label>
+            <textarea id="config-editor" spellcheck="false" autocomplete="off" aria-label="编辑 config.json"></textarea>
+            <div class="config-meta">
+              <span id="config-path">配置路径：—</span>
+              <span id="config-state">尚未载入</span>
+            </div>
+          </div>
         </div>
       </section>
     </main>

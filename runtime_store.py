@@ -3,7 +3,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -12,6 +12,7 @@ DB_PATH = os.environ.get("APP_DB_PATH", os.path.join(_PROJECT_DIR, "data", "runt
 _SCHEMA_LOCK = threading.Lock()
 _INITIALIZED = False
 _SENSITIVE_KEYS = ("password", "passwd", "secret", "token", "apikey", "api_key", "authorization")
+ACTIVE_INSTANCE_STATUSES = ("queued", "running", "waiting_alist")
 
 
 def utc_now():
@@ -65,6 +66,14 @@ def _connect():
     return connection
 
 
+def _ensure_column(connection, table, column, definition):
+    columns = {
+        row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
+    }
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db():
     global _INITIALIZED
     if _INITIALIZED:
@@ -107,6 +116,9 @@ def init_db():
                     created_at TEXT NOT NULL,
                     started_at TEXT,
                     finished_at TEXT,
+                    postprocess_status TEXT,
+                    postprocess_started_at TEXT,
+                    postprocess_finished_at TEXT,
                     FOREIGN KEY (request_id) REFERENCES api_requests(request_id)
                 )
                 """
@@ -147,8 +159,29 @@ def init_db():
                     error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    last_seen_at TEXT,
+                    completed_at TEXT,
                     FOREIGN KEY (run_id) REFERENCES task_runs(run_id)
                 )
+                """
+            )
+            _ensure_column(connection, "task_runs", "postprocess_status", "TEXT")
+            _ensure_column(connection, "task_runs", "postprocess_started_at", "TEXT")
+            _ensure_column(connection, "task_runs", "postprocess_finished_at", "TEXT")
+            _ensure_column(connection, "alist_copy_tasks", "last_seen_at", "TEXT")
+            _ensure_column(connection, "alist_copy_tasks", "completed_at", "TEXT")
+            connection.execute(
+                """
+                UPDATE alist_copy_tasks
+                SET last_seen_at = COALESCE(last_seen_at, updated_at, created_at)
+                WHERE last_seen_at IS NULL
+                """
+            )
+            connection.execute(
+                """
+                UPDATE alist_copy_tasks
+                SET completed_at = COALESCE(completed_at, end_time, updated_at)
+                WHERE completed_at IS NULL AND state IN (2, 4, 7)
                 """
             )
             connection.execute(
@@ -172,6 +205,10 @@ def init_db():
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_alist_copy_tasks_state ON alist_copy_tasks(state)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_runs_postprocess_status "
+                "ON task_runs(postprocess_status)"
+            )
             connection.execute("PRAGMA optimize")
             connection.execute(
                 """
@@ -182,6 +219,14 @@ def init_db():
                 WHERE status IN ('queued', 'running')
                 """,
                 (utc_now(),),
+            )
+            connection.execute(
+                """
+                UPDATE task_runs
+                SET postprocess_status = 'pending',
+                    postprocess_started_at = NULL
+                WHERE postprocess_status = 'running'
+                """
             )
         _INITIALIZED = True
 
@@ -240,6 +285,84 @@ def create_run(task_uuid, task_type, trigger_type, parameters=None, request_id=N
     return run_id
 
 
+def create_run_if_instance_idle(
+    task_uuid,
+    task_type,
+    trigger_type,
+    parameters=None,
+    request_id=None,
+):
+    """Atomically create a queued run unless the same task instance is active."""
+    init_db()
+    run_id = str(uuid.uuid4())
+    task_uuid = str(task_uuid)
+    now = utc_now()
+    placeholders = ",".join("?" for _ in ACTIVE_INSTANCE_STATUSES)
+
+    with _connect() as connection:
+        # Serialize the active-run check and insert so simultaneous scheduler
+        # and API triggers cannot both enqueue the same task instance.
+        connection.execute("BEGIN IMMEDIATE")
+        active_run = connection.execute(
+            f"""
+            SELECT run_id, status, created_at
+            FROM task_runs
+            WHERE task_type = ? AND task_uuid = ?
+              AND status IN ({placeholders})
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (task_type, task_uuid, *ACTIVE_INSTANCE_STATUSES),
+        ).fetchone()
+
+        if active_run:
+            active = dict(active_run)
+            result = {
+                "reason": "instance_task_in_progress",
+                "blocking_run_id": active["run_id"],
+                "blocking_status": active["status"],
+            }
+            connection.execute(
+                """
+                INSERT INTO task_runs (
+                    run_id, task_uuid, task_type, trigger_type, request_id,
+                    status, parameters_json, result_json, created_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, 'skipped_busy', ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    task_uuid,
+                    task_type,
+                    trigger_type,
+                    request_id,
+                    _json_dump(parameters),
+                    _json_dump(result),
+                    now,
+                    now,
+                ),
+            )
+            return run_id, active
+
+        connection.execute(
+            """
+            INSERT INTO task_runs (
+                run_id, task_uuid, task_type, trigger_type, request_id,
+                status, parameters_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
+            """,
+            (
+                run_id,
+                task_uuid,
+                task_type,
+                trigger_type,
+                request_id,
+                _json_dump(parameters),
+                now,
+            ),
+        )
+    return run_id, None
+
+
 def update_run(run_id, status, result=None, error=None):
     init_db()
     now = utc_now()
@@ -249,7 +372,14 @@ def update_run(run_id, status, result=None, error=None):
     if status == "running":
         fields.append("started_at = COALESCE(started_at, ?)")
         values.append(now)
-    if status in ("submitted", "succeeded", "failed", "skipped_busy", "interrupted"):
+    if status in (
+        "submitted",
+        "succeeded",
+        "failed",
+        "skipped_busy",
+        "skipped_unavailable",
+        "interrupted",
+    ):
         fields.append("finished_at = ?")
         values.append(now)
     if result is not None:
@@ -279,8 +409,9 @@ def record_alist_copy_tasks(run_id, tasks, source_dir, destination_dir, entry_na
                 INSERT INTO alist_copy_tasks (
                     alist_task_id, run_id, source_dir, destination_dir, entry_name,
                     name, state, status, progress, start_time, end_time,
-                    total_bytes, error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_bytes, error, created_at, updated_at, last_seen_at,
+                    completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(alist_task_id) DO UPDATE SET
                     name = excluded.name,
                     state = excluded.state,
@@ -290,7 +421,8 @@ def record_alist_copy_tasks(run_id, tasks, source_dir, destination_dir, entry_na
                     end_time = excluded.end_time,
                     total_bytes = excluded.total_bytes,
                     error = excluded.error,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    last_seen_at = excluded.last_seen_at
                 """,
                 (
                     str(task["id"]),
@@ -308,6 +440,8 @@ def record_alist_copy_tasks(run_id, tasks, source_dir, destination_dir, entry_na
                     task.get("error"),
                     now,
                     now,
+                    now,
+                    None,
                 ),
             )
 
@@ -320,6 +454,7 @@ def finalize_waiting_alist_runs(run_id=None):
         clauses.append("run_id = ?")
         values.append(run_id)
 
+    finalized = []
     with _connect() as connection:
         runs = connection.execute(
             f"SELECT run_id, result_json FROM task_runs WHERE {' AND '.join(clauses)}",
@@ -329,8 +464,9 @@ def finalize_waiting_alist_runs(run_id=None):
             summary_row = connection.execute(
                 """
                 SELECT COUNT(*) AS total,
-                       SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END) AS succeeded,
-                       SUM(CASE WHEN state IN (4, 7) THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed,
+                       SUM(CASE WHEN completed_at IS NOT NULL AND state = 2 THEN 1 ELSE 0 END) AS succeeded,
+                       SUM(CASE WHEN completed_at IS NOT NULL AND (state IS NULL OR state != 2) THEN 1 ELSE 0 END) AS failed,
                        AVG(progress) AS progress
                 FROM alist_copy_tasks
                 WHERE run_id = ?
@@ -341,11 +477,10 @@ def finalize_waiting_alist_runs(run_id=None):
                 continue
 
             summary = dict(summary_row)
+            summary["completed"] = summary["completed"] or 0
             summary["succeeded"] = summary["succeeded"] or 0
             summary["failed"] = summary["failed"] or 0
-            summary["pending"] = (
-                summary["total"] - summary["succeeded"] - summary["failed"]
-            )
+            summary["pending"] = summary["total"] - summary["completed"]
             summary["progress"] = (
                 round(summary["progress"], 2)
                 if summary["progress"] is not None
@@ -361,13 +496,20 @@ def finalize_waiting_alist_runs(run_id=None):
             update_values = [_json_dump(result)]
             if summary["pending"] == 0:
                 final_status = "failed" if summary["failed"] else "succeeded"
-                fields.extend(["status = ?", "finished_at = ?"])
+                fields.extend(
+                    [
+                        "status = ?",
+                        "finished_at = ?",
+                        "postprocess_status = 'pending'",
+                    ]
+                )
                 update_values.extend([final_status, utc_now()])
                 if summary["failed"]:
                     failed_ids = connection.execute(
                         """
                         SELECT alist_task_id FROM alist_copy_tasks
-                        WHERE run_id = ? AND state IN (4, 7)
+                        WHERE run_id = ? AND completed_at IS NOT NULL
+                          AND (state IS NULL OR state != 2)
                         ORDER BY created_at, alist_task_id
                         LIMIT 20
                         """,
@@ -378,26 +520,48 @@ def finalize_waiting_alist_runs(run_id=None):
                         "AList copy task failed or was canceled: "
                         + ", ".join(row["alist_task_id"] for row in failed_ids)
                     )
+                finalized.append(
+                    {
+                        "run_id": run["run_id"],
+                        "status": final_status,
+                        "summary": summary,
+                    }
+                )
             update_values.append(run["run_id"])
             connection.execute(
                 f"UPDATE task_runs SET {', '.join(fields)} WHERE run_id = ?",
                 update_values,
             )
+    return finalized
 
 
-def reconcile_alist_copy_tasks(tasks):
+def _alist_task_map(tasks):
+    return {
+        str(task["id"]): task
+        for task in tasks or []
+        if isinstance(task, dict) and task.get("id")
+    }
+
+
+def reconcile_alist_copy_tasks(done_tasks, undone_tasks, missing_timeout_seconds=600):
     init_db()
     now = utc_now()
+    done_by_id = _alist_task_map(done_tasks)
+    undone_by_id = _alist_task_map(undone_tasks)
+    stats = {
+        "tracked_done": 0,
+        "tracked_undone": 0,
+        "missing_timed_out": 0,
+    }
     with _connect() as connection:
-        for task in tasks or []:
-            task_id = task.get("id") if isinstance(task, dict) else None
-            if not task_id:
-                continue
-            connection.execute(
+        for task_id, task in done_by_id.items():
+            cursor = connection.execute(
                 """
                 UPDATE alist_copy_tasks
                 SET name = ?, state = ?, status = ?, progress = ?,
-                    start_time = ?, end_time = ?, total_bytes = ?, error = ?, updated_at = ?
+                    start_time = ?, end_time = ?, total_bytes = ?, error = ?,
+                    updated_at = ?, last_seen_at = ?,
+                    completed_at = COALESCE(completed_at, ?)
                 WHERE alist_task_id = ?
                 """,
                 (
@@ -410,10 +574,159 @@ def reconcile_alist_copy_tasks(tasks):
                     task.get("total_bytes"),
                     task.get("error"),
                     now,
-                    str(task_id),
+                    now,
+                    now,
+                    task_id,
                 ),
             )
-    finalize_waiting_alist_runs()
+            stats["tracked_done"] += cursor.rowcount
+
+        for task_id, task in undone_by_id.items():
+            cursor = connection.execute(
+                """
+                UPDATE alist_copy_tasks
+                SET name = ?, state = ?, status = ?, progress = ?,
+                    start_time = ?, end_time = ?, total_bytes = ?, error = ?,
+                    updated_at = ?, last_seen_at = ?
+                WHERE alist_task_id = ? AND completed_at IS NULL
+                """,
+                (
+                    task.get("name"),
+                    task.get("state"),
+                    task.get("status"),
+                    task.get("progress"),
+                    task.get("start_time"),
+                    task.get("end_time"),
+                    task.get("total_bytes"),
+                    task.get("error"),
+                    now,
+                    now,
+                    task_id,
+                ),
+            )
+            stats["tracked_undone"] += cursor.rowcount
+
+        timeout_seconds = max(0, int(missing_timeout_seconds or 0))
+        if timeout_seconds:
+            threshold = (
+                datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+            ).isoformat(timespec="milliseconds")
+            visible_ids = set(done_by_id) | set(undone_by_id)
+            missing_rows = connection.execute(
+                """
+                SELECT child.alist_task_id
+                FROM alist_copy_tasks AS child
+                JOIN task_runs AS parent ON parent.run_id = child.run_id
+                WHERE parent.status = 'waiting_alist'
+                  AND child.completed_at IS NULL
+                  AND child.last_seen_at <= ?
+                """,
+                (threshold,),
+            ).fetchall()
+            for row in missing_rows:
+                task_id = row["alist_task_id"]
+                if task_id in visible_ids:
+                    continue
+                cursor = connection.execute(
+                    """
+                    UPDATE alist_copy_tasks
+                    SET state = 4,
+                        status = 'missing_timeout',
+                        error = ?,
+                        updated_at = ?,
+                        completed_at = ?
+                    WHERE alist_task_id = ? AND completed_at IS NULL
+                    """,
+                    (
+                        f"AList task was absent from both done and undone for {timeout_seconds} seconds",
+                        now,
+                        now,
+                        task_id,
+                    ),
+                )
+                stats["missing_timed_out"] += cursor.rowcount
+
+    stats["finalized_runs"] = finalize_waiting_alist_runs()
+    return stats
+
+
+def claim_pending_postprocess_runs(limit=100):
+    init_db()
+    now = utc_now()
+    with _connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            """
+            SELECT run_id, status
+            FROM task_runs
+            WHERE postprocess_status = 'pending'
+            ORDER BY finished_at, created_at
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        if not rows:
+            return []
+        run_ids = [row["run_id"] for row in rows]
+        placeholders = ",".join("?" for _ in run_ids)
+        connection.execute(
+            f"""
+            UPDATE task_runs
+            SET postprocess_status = 'running',
+                postprocess_started_at = ?,
+                postprocess_finished_at = NULL
+            WHERE run_id IN ({placeholders}) AND postprocess_status = 'pending'
+            """,
+            (now, *run_ids),
+        )
+        tasks = connection.execute(
+            f"""
+            SELECT * FROM alist_copy_tasks
+            WHERE run_id IN ({placeholders})
+            ORDER BY created_at, alist_task_id
+            """,
+            run_ids,
+        ).fetchall()
+
+    tasks_by_run = {run_id: [] for run_id in run_ids}
+    for task in tasks:
+        tasks_by_run[task["run_id"]].append(dict(task))
+    return [
+        {
+            "run_id": row["run_id"],
+            "status": row["status"],
+            "tasks": tasks_by_run[row["run_id"]],
+        }
+        for row in rows
+    ]
+
+
+def finish_run_postprocess(run_id, success, result):
+    init_db()
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT result_json FROM task_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if not row:
+            return
+        try:
+            run_result = json.loads(row["result_json"]) if row["result_json"] else {}
+        except json.JSONDecodeError:
+            run_result = {"previous_result": row["result_json"]}
+        run_result["postprocess"] = result
+        connection.execute(
+            """
+            UPDATE task_runs
+            SET result_json = ?, postprocess_status = ?, postprocess_finished_at = ?
+            WHERE run_id = ?
+            """,
+            (
+                _json_dump(run_result),
+                "succeeded" if success else "failed",
+                utc_now(),
+                run_id,
+            ),
+        )
 
 
 def record_callback(
@@ -512,8 +825,8 @@ def list_runs(
                 f"""
                 SELECT run_id,
                        COUNT(*) AS total,
-                       SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END) AS succeeded,
-                       SUM(CASE WHEN state IN (4, 7) THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN completed_at IS NOT NULL AND state = 2 THEN 1 ELSE 0 END) AS succeeded,
+                       SUM(CASE WHEN completed_at IS NOT NULL AND (state IS NULL OR state != 2) THEN 1 ELSE 0 END) AS failed,
                        AVG(progress) AS progress
                 FROM alist_copy_tasks
                 WHERE run_id IN ({placeholders})
@@ -564,8 +877,8 @@ def get_run(run_id, child_limit=500, child_offset=0):
         summary_row = connection.execute(
             """
             SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END) AS succeeded,
-                   SUM(CASE WHEN state IN (4, 7) THEN 1 ELSE 0 END) AS failed,
+                   SUM(CASE WHEN completed_at IS NOT NULL AND state = 2 THEN 1 ELSE 0 END) AS succeeded,
+                   SUM(CASE WHEN completed_at IS NOT NULL AND (state IS NULL OR state != 2) THEN 1 ELSE 0 END) AS failed,
                    AVG(progress) AS progress
             FROM alist_copy_tasks
             WHERE run_id = ?

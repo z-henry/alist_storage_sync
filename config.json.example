@@ -16,7 +16,11 @@
     ],
     "alist": {
         "url": "https://0.0.0.0:5244",
-        "apikey": "****"
+        "apikey": "****",
+        "task_missing_timeout_seconds": 600,
+        "request_timeout_seconds": 15,
+        "healthcheck_interval_seconds": 15,
+        "healthcheck_timeout_seconds": 3
     },
     "cover_dst_when_diff": false,
     "delete_src_when_same": false,

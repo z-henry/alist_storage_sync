@@ -11,8 +11,8 @@
 ## 功能
 
 - **存储同步**: 通过 alist 复制的方式，定时将一个 alist 存储同步到另一个存储上。
-- **驱动emby扫描**: 扫描 alist 的已完成的复制任务，刷新 alist 的缓存并通知 Emby 进行对应文件夹扫描。
-- **提供webhook**: 扫描 alist 的已完成的复制任务，在复制完后触发。包含同步文件所在的alist根目录信息，方便事件驱动下游流程。
+- **驱动emby扫描**: 本系统创建的复制子任务全部成功后，刷新对应目标目录缓存并通知 Emby 扫描。
+- **提供webhook**: 本系统创建的复制子任务全部成功后，按父任务触发下游流程。
 - **alist目录树缓慢缓存**: 定时按照制定的qps，强制刷新指定的alist目录的目录树。
 *此功能用于应对115日益严重的风控，需要alist缓存时长设置超长，由此功能刷新缓存（建议qps<=0.5）。缺点是非`alist_storage_sync`同部任务更新到网盘更新的文件，不能及时刷新。依赖于目录树刷新任务的定时，或手动通过alist页面进行刷新*
 *搭配[strm生成](https://github.com/Akimio521/AutoFilm)食用*
@@ -31,7 +31,7 @@
 
 ```sh
 ./build.sh
-# alist-storage-sync:1.13.0
+# alist-storage-sync:1.15.0
 # alist-storage-sync:latest
 ```
 
@@ -43,7 +43,7 @@ IMAGE_NAME=myrepo/alist-storage-sync ./build.sh
 
 ### Docker 部署
 
-在使用 Docker 部署 `alist_storage_sync` 前，请确保已经创建好 `config.json` 并放置在合适的路径。
+在使用 Docker 部署 `alist_storage_sync` 前，请确保已经创建好 `config.json` 并放置在合适的路径。控制台需要写入该文件才能在线保存配置，因此不要将它以 `:ro` 方式挂载，并确保容器对宿主文件有写权限。
 
 1. **创建配置文件**
 
@@ -96,7 +96,13 @@ IMAGE_NAME=myrepo/alist-storage-sync ./build.sh
 
 应用启动后访问 `http://<服务器地址>:8115/ui`，可以查看定时任务、运行参数与结果、API 请求以及 Emby/Webhook 回调记录。
 
-运行概览会按具体实例任务（例如某个同步实例、`cache-refresh` 或某个目录树刷新实例）折叠父任务，并在实例标题展示最近执行时间；展开父任务后按需加载对应的 AList 文件子任务。运行记录页面平铺父任务，并支持按实例任务、时间范围和状态筛选。子任务每次加载 100 条，可继续分页加载。
+服务会按照 `alist.healthcheck_interval_seconds`（默认 15 秒）调用 OpenList 官方 `/ping`，并使用配置的 API Key 检查新版复制任务接口。AList 不可达、尚未就绪或 API Key 无效时，业务调度会暂停，任务 API 返回 HTTP 503；UI 和健康检查保持可用。检测恢复后业务调度自动继续。`alist.healthcheck_timeout_seconds` 控制单次探活超时，`alist.request_timeout_seconds` 控制其他 AList、Emby 和 Webhook 请求超时。
+
+运行概览会按具体实例任务（例如某个同步实例、`cache-refresh` 或某个目录树刷新实例）折叠父任务，并在实例标题展示最近执行时间；展开父任务后按需加载对应的 AList 文件子任务。运行记录页面平铺父任务，并支持按实例任务、时间范围和状态筛选。子任务每次加载 100 条，可继续分页加载。同一个实例任务存在排队中、运行中或等待 AList 子任务的父任务时，后续触发会记录为“忙碌跳过”，不会再次进入执行队列。
+
+`cache-refresh` 实例实际承担“子任务巡检与父任务后处理”：`done` 用于确认本系统子任务的成功、失败或取消终态，`undone` 用于更新本系统子任务的运行进度。某个本地子任务同时不在 `done` 和 `undone` 中超过 `alist.task_missing_timeout_seconds`（默认 600 秒）后，才会按丢失超时处理。每个父任务独立判断；成功父任务刷新自己记录的目标路径并触发 Emby/Webhook，随后只清理该父任务创建的 AList task ID。未记录在本地数据库中的 AList 任务不会被更新、回调或删除。配置值设为 `0` 可以关闭丢失超时。
+
+“配置管理”页面可以直接编辑当前 `CONFIG_PATH` 指向的 JSON。保存时会校验 JSON 结构、必填字段、URL、Cron 和任务 UUID，写入成功后立即更新 AList/Emby/Webhook 参数并重建后续调度。已经排队或正在执行的任务继续使用入队时参数。配置中包含 API Key 等敏感信息，必须设置强 `UI_PASSWORD`，跨主机使用时应配置 HTTPS。
 
 同步运行会保存 `/api/fs/copy` 返回的 AList/OpenList task ID，并在控制台中展示关联子任务的数量、进度和结果。只有所有文件复制子任务成功，父同步任务才会标记为成功；任一子任务失败或取消，父任务会标记为失败。为避免目录复制动态生成无法关联的内部任务，目录由本程序逐级创建，文件则逐个提交复制。
 

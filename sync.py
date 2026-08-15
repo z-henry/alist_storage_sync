@@ -2,9 +2,9 @@ import os
 
 import logger_config
 import runtime_store
+import config
 from api_alist import copy_file, get_files, list_files, mkdir, remove_file
 from cashe_refresh import recursive_refresh_cache
-from config import cover_dst_when_diff, delete_src_when_same
 
 
 def _new_summary():
@@ -88,7 +88,7 @@ def sync_files(path_src, path_dst, summary=None, run_id=None):
         elif file_src["is_dir"] is True:
             sync_files(file_src_path, file_dst_path, summary, run_id)
         elif file_size != file_dst_info["size"]:
-            if cover_dst_when_diff:
+            if config.cover_dst_when_diff:
                 logger_config.logger.info(
                     f"Replacing file {file_name} in {path_dst} with new version from {path_src}"
                 )
@@ -103,7 +103,7 @@ def sync_files(path_src, path_dst, summary=None, run_id=None):
                     summary["failures"] += 1
             else:
                 summary["unchanged_entries"] += 1
-        elif delete_src_when_same:
+        elif config.delete_src_when_same:
             logger_config.logger.info(f"Deleting file {file_name} from {path_src}")
             if remove_file(path_src, file_name):
                 summary["source_files_deleted"] += 1

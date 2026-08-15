@@ -3,9 +3,9 @@ import secrets
 
 from flask import Blueprint, Response, jsonify, render_template, request
 
+import config
 import runtime_store
 import task_manager
-from config import dir_tree_build_tasks, sync_tasks
 from version import APP_VERSION
 
 
@@ -69,10 +69,10 @@ def overview():
     runtime = task_manager.runtime_snapshot()
     counts = runtime_store.overview_counts()
     recent_runs = []
-    instance_keys = [("sync", task.uuid) for task in sync_tasks]
+    instance_keys = [("sync", task.uuid) for task in config.sync_tasks]
     instance_keys.append(("cache_refresh", "cache-refresh"))
     instance_keys.extend(
-        ("dir_tree_build", task.uuid) for task in dir_tree_build_tasks
+        ("dir_tree_build", task.uuid) for task in config.dir_tree_build_tasks
     )
     instance_keys = list(dict.fromkeys(instance_keys))
     known_instances = set(instance_keys)
@@ -114,7 +114,7 @@ def tasks():
         latest.setdefault((run["task_type"], run["task_uuid"]), run)
 
     items = []
-    for task in sync_tasks:
+    for task in config.sync_tasks:
         job = jobs.get(f"sync:{task.uuid}", {})
         items.append(
             {
@@ -137,15 +137,18 @@ def tasks():
         {
             "task_uuid": "cache-refresh",
             "task_type": "cache_refresh",
-            "name": "复制完成检查与缓存刷新",
+            "name": "子任务巡检与父任务后处理",
             "schedule": "* * * * *",
             "next_run_time": cache_job.get("next_run_time"),
-            "parameters": {},
+            "parameters": {
+                "healthcheck_interval_seconds": config.alist_healthcheck_interval_seconds,
+                "task_missing_timeout_seconds": config.alist_task_missing_timeout_seconds,
+            },
             "last_run": latest.get(("cache_refresh", "cache-refresh")),
         }
     )
 
-    for task in dir_tree_build_tasks:
+    for task in config.dir_tree_build_tasks:
         job = jobs.get(f"dir-tree:{task.uuid}", {})
         items.append(
             {
@@ -208,3 +211,42 @@ def callbacks():
             )
         }
     )
+
+
+@ui_blueprint.route("/ui/api/config", methods=["GET"])
+def read_config():
+    return jsonify(
+        {
+            "config": config.get_config(),
+            "path": config.CONFIG_PATH,
+            "writable": os.access(config.CONFIG_PATH, os.W_OK),
+        }
+    )
+
+
+@ui_blueprint.route("/ui/api/config", methods=["PUT"])
+def write_config():
+    if not request.is_json:
+        return jsonify({"message": "Content-Type must be application/json"}), 415
+    payload = request.get_json(silent=True)
+    try:
+        validated = config.validate_config(payload)
+        task_manager.validate_scheduler_config(validated)
+        saved = config.save_config(validated)
+        health = task_manager.reload_scheduler()
+    except (config.ConfigError, ValueError, KeyError) as error:
+        return jsonify({"message": str(error)}), 400
+    except OSError as error:
+        return jsonify({"message": f"Failed to write config: {error}"}), 500
+    return jsonify(
+        {
+            "message": "Configuration saved and applied",
+            "config": saved,
+            "alist": health,
+        }
+    )
+
+
+@ui_blueprint.route("/ui/api/alist/recheck", methods=["POST"])
+def recheck_alist():
+    return jsonify({"alist": task_manager.refresh_alist_health()})

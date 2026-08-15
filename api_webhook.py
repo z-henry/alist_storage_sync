@@ -2,17 +2,19 @@ from time import perf_counter
 
 import requests
 
-from config import webhook_url
-
-
-headers = {"Content-Type": "application/json"}
+import config
 
 
 def media_update_detail(paths):
     payload = {"Updates": [{"Path": path} for path in paths]}
     started = perf_counter()
     try:
-        response = requests.post(webhook_url, json=payload, headers=headers)
+        response = requests.post(
+            config.webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=config.alist_request_timeout_seconds,
+        )
         return {
             "success": response.status_code in (200, 204),
             "status_code": response.status_code,
@@ -34,4 +36,3 @@ def media_update_detail(paths):
 
 def media_update(paths):
     return media_update_detail(paths)["success"]
-    return response.status_code == 200 or response.status_code == 204

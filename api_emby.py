@@ -2,23 +2,23 @@ from time import perf_counter
 
 import requests
 
-from config import emby_apikey, emby_mount_path, emby_url
-
-
-headers = {
-    "X-Emby-Token": emby_apikey,
-    "Content-Type": "application/json",
-}
+import config
 
 
 def media_update_detail(paths):
-    payload = {"Updates": [{"Path": emby_mount_path + path} for path in paths]}
+    payload = {
+        "Updates": [{"Path": config.emby_mount_path + path} for path in paths]
+    }
     started = perf_counter()
     try:
         response = requests.post(
-            f"{emby_url}/emby/Library/Media/Updated",
+            f"{config.emby_url}/emby/Library/Media/Updated",
             json=payload,
-            headers=headers,
+            headers={
+                "X-Emby-Token": config.emby_apikey,
+                "Content-Type": "application/json",
+            },
+            timeout=config.alist_request_timeout_seconds,
         )
         return {
             "success": response.status_code in (200, 204),
@@ -41,4 +41,3 @@ def media_update_detail(paths):
 
 def media_update(paths):
     return media_update_detail(paths)["success"]
-    return response.status_code == 200 or response.status_code == 204

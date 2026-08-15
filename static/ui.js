@@ -6,11 +6,12 @@ const labels = {
   succeeded: "成功",
   failed: "失败",
   skipped_busy: "忙碌跳过",
+  skipped_unavailable: "AList 不可用",
   interrupted: "意外中断",
   scheduled: "定时触发",
   api: "API 触发",
   sync: "存储同步",
-  cache_refresh: "缓存与回调",
+  cache_refresh: "子任务巡检与后处理",
   dir_tree_build: "目录树刷新",
 };
 
@@ -20,10 +21,13 @@ const viewMeta = {
   runs: ["OPERATIONS / RUNS", "运行记录"],
   requests: ["OPERATIONS / INBOUND", "API 请求"],
   callbacks: ["OPERATIONS / OUTBOUND", "回调记录"],
+  config: ["OPERATIONS / CONFIGURATION", "配置管理"],
 };
 
 let currentView = "overview";
 let refreshing = false;
+let configLoaded = false;
+let configDirty = false;
 const expandedRunIds = new Set();
 const expandedOverviewGroups = new Set();
 const runDetailCache = new Map();
@@ -57,7 +61,7 @@ function parseInstanceKey(value) {
 
 function instanceLabel(taskType, taskUuid) {
   if (taskType === "sync") return `同步任务 · ${taskUuid}`;
-  if (taskType === "cache_refresh") return `缓存与回调 · ${taskUuid}`;
+  if (taskType === "cache_refresh") return `子任务巡检与后处理 · ${taskUuid}`;
   if (taskType === "dir_tree_build") return `目录树刷新 · ${taskUuid}`;
   return `${label(taskType)} · ${taskUuid}`;
 }
@@ -102,9 +106,10 @@ function showDetail(title, data) {
   document.getElementById("detail-dialog").showModal();
 }
 
-function showToast(message) {
+function showToast(message, kind = "error") {
   const toast = document.getElementById("toast");
   toast.textContent = message;
+  toast.classList.toggle("success", kind === "success");
   toast.classList.add("show");
   window.setTimeout(() => toast.classList.remove("show"), 3500);
 }
@@ -177,6 +182,7 @@ function alistTaskCell(run) {
 }
 
 function childStatus(task) {
+  if (task.status === "missing_timeout") return ["failed", "丢失超时"];
   if (task.state === 2) return ["succeeded", "成功"];
   if (task.state === 4) return ["failed", "已取消"];
   if (task.state === 7) return ["failed", "失败"];
@@ -442,7 +448,7 @@ function renderOverviewRunGroups(runs) {
       "",
     );
     const failed = groupRuns.filter((run) => run.status === "failed").length;
-    const waiting = groupRuns.filter((run) => ["queued", "running", "waiting_alist"].includes(run.status)).length;
+  const waiting = groupRuns.filter((run) => ["queued", "running", "waiting_alist"].includes(run.status)).length;
     summary.append(
       title,
       el(
@@ -498,18 +504,30 @@ function populateRunInstanceFilter(configuredTasks, recentRuns) {
 
 function renderOverview(data) {
   const runtime = data.runtime;
-  const healthy = runtime.scheduler_running && runtime.worker_alive;
+  const alist = runtime.alist || {};
+  const serviceHealthy = runtime.scheduler_running && runtime.worker_alive;
+  const healthy = serviceHealthy && alist.online;
   const liveDot = document.querySelector(".live-dot");
+  document.querySelector(".hero-card").classList.toggle("offline", !alist.online);
   liveDot.className = `live-dot ${healthy ? "healthy" : "error"}`;
-  document.getElementById("sidebar-service-state").textContent = healthy ? "服务运行正常" : "服务状态异常";
-  document.getElementById("hero-title").textContent = healthy ? "调度器与工作线程运行正常" : "服务组件需要检查";
-  document.getElementById("hero-copy").textContent = healthy
-    ? `已载入 ${runtime.scheduler_jobs.length} 个调度计划，最近记录会自动刷新。`
-    : "调度器或工作线程尚未启动，请检查应用启动日志。";
+  document.getElementById("sidebar-service-state").textContent = alist.online
+    ? "AList 在线 · 任务已启用"
+    : "AList 不可用 · 任务已暂停";
+  if (!serviceHealthy) {
+    document.getElementById("hero-title").textContent = "服务组件需要检查";
+    document.getElementById("hero-copy").textContent = "调度器或工作线程尚未启动，请检查应用启动日志。";
+  } else if (!alist.online) {
+    document.getElementById("hero-title").textContent = "AList 不可用，业务任务已暂停";
+    document.getElementById("hero-copy").textContent = alist.error || "系统会持续探测，AList 恢复后自动继续调度。";
+  } else {
+    document.getElementById("hero-title").textContent = "AList 与任务服务运行正常";
+    document.getElementById("hero-copy").textContent = `AList 响应 ${alist.latency_ms ?? "—"} ms，已载入 ${runtime.scheduler_jobs.length} 个调度计划。`;
+  }
   document.getElementById("queue-number").textContent = runtime.queue_size;
 
   const counts = data.counts.runs_today || {};
   const metrics = [
+    ["AList 状态", alist.online ? "在线" : "不可用", alist.checked_at ? `检测于 ${formatDate(alist.checked_at)}` : "等待首次检测"],
     ["等待 AList", (counts.waiting_alist || 0) + (counts.submitted || 0), "仍有复制子任务未结束"],
     ["今日成功", counts.succeeded || 0, "本地任务完整结束"],
     ["今日失败", counts.failed || 0, "需要查看错误详情"],
@@ -523,6 +541,79 @@ function renderOverview(data) {
     container.append(card);
   });
   renderOverviewRunGroups(data.recent_runs || []);
+}
+
+async function loadConfig(force = false) {
+  if (configDirty && !force) return;
+  const editor = document.getElementById("config-editor");
+  const state = document.getElementById("config-state");
+  state.textContent = "正在载入";
+  try {
+    const data = await getJson("/ui/api/config");
+    editor.value = JSON.stringify(data.config, null, 2);
+    document.getElementById("config-path").textContent = `配置路径：${data.path}`;
+    document.getElementById("config-save").disabled = !data.writable;
+    state.textContent = data.writable ? "已载入" : "配置文件不可写";
+    state.classList.remove("dirty");
+    configLoaded = true;
+    configDirty = false;
+  } catch (error) {
+    state.textContent = `载入失败：${error.message}`;
+    showToast(`配置载入失败：${error.message}`);
+  }
+}
+
+async function saveConfig() {
+  const editor = document.getElementById("config-editor");
+  const button = document.getElementById("config-save");
+  let parsed;
+  try {
+    parsed = JSON.parse(editor.value);
+  } catch (error) {
+    showToast(`JSON 格式错误：${error.message}`);
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "保存中";
+  try {
+    const response = await fetch("/ui/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(parsed),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
+    editor.value = JSON.stringify(data.config, null, 2);
+    configDirty = false;
+    document.getElementById("config-state").textContent = "已保存并应用";
+    document.getElementById("config-state").classList.remove("dirty");
+    showToast(data.alist?.online ? "配置已保存并生效" : "配置已保存；AList 当前不可用，业务任务保持暂停", data.alist?.online ? "success" : "error");
+    await refreshAll();
+  } catch (error) {
+    showToast(`保存失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "保存并应用";
+  }
+}
+
+async function recheckAlist() {
+  const button = document.getElementById("alist-recheck");
+  button.disabled = true;
+  button.textContent = "检测中";
+  try {
+    const response = await fetch("/ui/api/alist/recheck", { method: "POST", headers: { Accept: "application/json" } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
+    showToast(data.alist?.online ? `AList 在线，响应 ${data.alist.latency_ms} ms` : `AList 不可用：${data.alist?.error || "未知错误"}`, data.alist?.online ? "success" : "error");
+    await refreshAll();
+  } catch (error) {
+    showToast(`检测失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "检测 AList";
+  }
 }
 
 function renderTasks(data) {
@@ -660,6 +751,7 @@ function switchView(view) {
   document.getElementById("view-eyebrow").textContent = viewMeta[view][0];
   document.getElementById("view-title").textContent = viewMeta[view][1];
   window.history.replaceState(null, "", `#${view}`);
+  if (view === "config" && !configLoaded) loadConfig();
 }
 
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
@@ -668,6 +760,15 @@ document.getElementById("refresh-button").addEventListener("click", refreshAll);
 document.getElementById("run-status-filter").addEventListener("change", refreshAll);
 document.getElementById("run-instance-filter").addEventListener("change", refreshAll);
 document.getElementById("run-time-filter").addEventListener("change", refreshAll);
+document.getElementById("config-editor").addEventListener("input", () => {
+  configDirty = true;
+  const state = document.getElementById("config-state");
+  state.textContent = "有未保存修改";
+  state.classList.add("dirty");
+});
+document.getElementById("config-reload").addEventListener("click", () => loadConfig(true));
+document.getElementById("config-save").addEventListener("click", saveConfig);
+document.getElementById("alist-recheck").addEventListener("click", recheckAlist);
 document.getElementById("dialog-close").addEventListener("click", () => document.getElementById("detail-dialog").close());
 document.getElementById("detail-dialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) event.currentTarget.close();

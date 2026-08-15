@@ -9,9 +9,13 @@ from apscheduler.triggers.cron import CronTrigger
 
 import logger_config
 import runtime_store
-from api_alist import copy_done, copy_undone
-from cashe_refresh import perform_cache_refresh, recursive_refresh_cache_all
-from config import dir_tree_build_tasks, sync_tasks
+import api_alist
+import config
+from cashe_refresh import (
+    cleanup_tracked_tasks,
+    perform_cache_refresh,
+    recursive_refresh_cache_all,
+)
 from sync import perform_sync
 
 
@@ -32,11 +36,21 @@ task_queue = queue.Queue()
 scheduler = None
 worker_thread = None
 started_at = None
+_scheduler_lock = threading.RLock()
+HEALTH_JOB_ID = "system:alist-health"
 
 
 def task_worker():
     while True:
         item = task_queue.get()
+        if not api_alist.is_online():
+            runtime_store.update_run(
+                item.run_id,
+                "skipped_unavailable",
+                result={"reason": "alist_unavailable", "health": api_alist.health_snapshot()},
+            )
+            task_queue.task_done()
+            continue
         runtime_store.update_run(item.run_id, "running")
         try:
             outcome = item.func(*item.args, run_id=item.run_id)
@@ -62,13 +76,40 @@ def start_worker():
 
 
 def _enqueue(task_uuid, task_type, trigger_type, parameters, func, args, request_id=None):
-    run_id = runtime_store.create_run(
+    if not api_alist.is_online():
+        run_id = runtime_store.create_run(
+            task_uuid=task_uuid,
+            task_type=task_type,
+            trigger_type=trigger_type,
+            parameters=parameters,
+            request_id=request_id,
+        )
+        runtime_store.update_run(
+            run_id,
+            "skipped_unavailable",
+            result={"reason": "alist_unavailable", "health": api_alist.health_snapshot()},
+        )
+        logger_config.logger.warning(
+            f"[task queue] AList 不可用，跳过任务：type={task_type}, task={task_uuid}"
+        )
+        return run_id
+
+    run_id, active_run = runtime_store.create_run_if_instance_idle(
         task_uuid=task_uuid,
         task_type=task_type,
         trigger_type=trigger_type,
         parameters=parameters,
         request_id=request_id,
     )
+    if active_run:
+        logger_config.logger.info(
+            "[task queue] 实例任务尚未完成，跳过本次触发："
+            f"run_id={run_id}, type={task_type}, task={task_uuid}, "
+            f"blocking_run_id={active_run['run_id']}, "
+            f"blocking_status={active_run['status']}"
+        )
+        return run_id
+
     task_queue.put(QueueItem(run_id=run_id, func=func, args=args))
     logger_config.logger.info(
         f"[task queue] 添加任务到队列：run_id={run_id}, type={task_type}, task={task_uuid}"
@@ -77,7 +118,7 @@ def _enqueue(task_uuid, task_type, trigger_type, parameters, func, args, request
 
 
 def infer_dst_path(path) -> str:
-    for task in sync_tasks:
+    for task in config.sync_tasks:
         if task.src in path:
             return path.replace(task.src, task.dst, 1)
     return ""
@@ -101,20 +142,6 @@ def check_tasks(sync_task, refresh, trigger_type="scheduled", request_id=None):
 
 def execute_check_tasks(sync_task, refresh, run_id=None):
     logger_config.logger.info(f"[sync check] task:{sync_task.uuid} start")
-    tasks = copy_undone()
-    if tasks is None:
-        raise RuntimeError("Failed to query AList copy tasks")
-    if tasks:
-        logger_config.logger.info("[sync check] Undone tasks found, skipping this run.")
-        return RunOutcome(
-            status="skipped_busy",
-            result={
-                "reason": "alist_copy_tasks_in_progress",
-                "undone_count": len(tasks),
-            },
-        )
-
-    logger_config.logger.info("[sync check] No undone tasks found, performing sync...")
     result = perform_sync(sync_task, refresh, run_id=run_id)
     if result.get("failures"):
         status = "failed"
@@ -127,6 +154,16 @@ def execute_check_tasks(sync_task, refresh, run_id=None):
 
 
 def check_cache_refresh(trigger_type="scheduled", request_id=None):
+    if not api_alist.is_online():
+        return _enqueue(
+            task_uuid="cache-refresh",
+            task_type="cache_refresh",
+            trigger_type=trigger_type,
+            parameters={},
+            func=execute_check_cache_refresh,
+            args=[],
+            request_id=request_id,
+        )
     if task_queue.qsize() > 1:
         logger_config.logger.info("[cache check] 任务队列中已有多个任务，跳过缓存刷新任务的添加。")
         run_id = runtime_store.create_run(
@@ -155,46 +192,65 @@ def check_cache_refresh(trigger_type="scheduled", request_id=None):
 
 
 def execute_check_cache_refresh(run_id=None):
-    undone_tasks = copy_undone()
-    done_tasks = copy_done()
+    done_tasks = api_alist.copy_done()
+    undone_tasks = api_alist.copy_undone()
     if undone_tasks is None or done_tasks is None:
         raise RuntimeError("Failed to query AList copy tasks")
 
-    runtime_store.reconcile_alist_copy_tasks(done_tasks + undone_tasks)
-
-    if undone_tasks:
-        logger_config.logger.info("[cache check] Undone tasks found, skipping refresh.")
-        return RunOutcome(
-            status="skipped_busy",
-            result={
-                "reason": "alist_copy_tasks_in_progress",
-                "undone_count": len(undone_tasks),
-            },
-        )
-
-    succeeded_tasks = [task for task in done_tasks if task.get("state") == 2]
-    failed_tasks = [task for task in done_tasks if task.get("state") != 2]
-
+    reconcile_result = runtime_store.reconcile_alist_copy_tasks(
+        done_tasks=done_tasks,
+        undone_tasks=undone_tasks,
+        missing_timeout_seconds=config.alist_task_missing_timeout_seconds,
+    )
     result = {
-        "success": not failed_tasks,
-        "done_count": len(done_tasks),
-        "succeeded_count": len(succeeded_tasks),
-        "failed_count": len(failed_tasks),
-        "failed_tasks": [
-            {
-                "name": task.get("name"),
-                "state": task.get("state"),
-                "status": task.get("status"),
-            }
-            for task in failed_tasks[:50]
-        ],
-        "refreshed_paths": [],
-        "callbacks": [],
+        "success": True,
+        "alist_done_count": len(done_tasks),
+        "alist_undone_count": len(undone_tasks),
+        "tracked_done": reconcile_result["tracked_done"],
+        "tracked_undone": reconcile_result["tracked_undone"],
+        "missing_timed_out": reconcile_result["missing_timed_out"],
+        "finalized_runs": reconcile_result["finalized_runs"],
+        "postprocessed_runs": [],
     }
-    if succeeded_tasks:
-        cache_result = perform_cache_refresh(succeeded_tasks, run_id=run_id)
-        result.update(cache_result)
-        result["success"] = not failed_tasks and cache_result.get("success", True)
+
+    for parent in runtime_store.claim_pending_postprocess_runs():
+        parent_run_id = parent["run_id"]
+        try:
+            if parent["status"] == "succeeded":
+                detail = perform_cache_refresh(
+                    parent["tasks"],
+                    run_id=parent_run_id,
+                )
+            else:
+                cleanup = cleanup_tracked_tasks(parent["tasks"])
+                detail = {
+                    "success": cleanup["success"],
+                    "cleanup": cleanup,
+                    "callbacks": [],
+                    "refreshed_paths": [],
+                    "failed_paths": [],
+                }
+        except Exception as error:
+            logger_config.logger.exception(
+                f"[cache check] 父任务后处理失败：run_id={parent_run_id}: {error}"
+            )
+            detail = {"success": False, "error": str(error)}
+
+        runtime_store.finish_run_postprocess(
+            parent_run_id,
+            success=detail.get("success", False),
+            result=detail,
+        )
+        result["postprocessed_runs"].append(
+            {
+                "run_id": parent_run_id,
+                "parent_status": parent["status"],
+                "success": detail.get("success", False),
+            }
+        )
+        if not detail.get("success", False):
+            result["success"] = False
+
     if result["success"]:
         return result
     return RunOutcome(status="failed", result=result)
@@ -233,11 +289,25 @@ def start_checker():
     if scheduler and scheduler.running:
         return
 
-    start_worker()
-    scheduler = BackgroundScheduler()
-    logging.getLogger("apscheduler").setLevel(logging.WARNING)
+    with _scheduler_lock:
+        start_worker()
+        scheduler = BackgroundScheduler()
+        logging.getLogger("apscheduler").setLevel(logging.WARNING)
+        _add_scheduler_jobs()
+        scheduler.start()
+        started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    refresh_alist_health()
 
-    for sync_task in sync_tasks:
+
+def validate_scheduler_config(data):
+    for task in data.get("tasks", []):
+        CronTrigger.from_crontab(task.get("cron", "1 * * * *"))
+    for task in data.get("dir_tree_build_tasks", []):
+        CronTrigger.from_crontab(task["cron"])
+
+
+def _add_scheduler_jobs():
+    for sync_task in config.sync_tasks:
         scheduler.add_job(
             check_tasks,
             args=[sync_task, False],
@@ -250,10 +320,10 @@ def start_checker():
         check_cache_refresh,
         trigger=CronTrigger(minute="*"),
         id="system:cache-refresh",
-        name="复制完成检查与缓存刷新",
+        name="子任务巡检与父任务后处理",
     )
 
-    for task in dir_tree_build_tasks:
+    for task in config.dir_tree_build_tasks:
         kwargs = {}
         if task.run_at_start:
             kwargs["next_run_time"] = datetime.now() + timedelta(minutes=2)
@@ -266,8 +336,51 @@ def start_checker():
             **kwargs,
         )
 
-    scheduler.start()
-    started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    scheduler.add_job(
+        refresh_alist_health,
+        trigger="interval",
+        seconds=config.alist_healthcheck_interval_seconds,
+        id=HEALTH_JOB_ID,
+        name="AList 可用性检查",
+        max_instances=1,
+        coalesce=True,
+    )
+
+
+def _set_operational_jobs_paused(paused):
+    if not scheduler or not scheduler.running:
+        return
+    with _scheduler_lock:
+        for job in scheduler.get_jobs():
+            if job.id == HEALTH_JOB_ID:
+                continue
+            if paused and job.next_run_time is not None:
+                scheduler.pause_job(job.id)
+            elif not paused and job.next_run_time is None:
+                scheduler.resume_job(job.id)
+
+
+def refresh_alist_health():
+    previous = api_alist.health_snapshot()
+    health = api_alist.check_health()
+    _set_operational_jobs_paused(not health["online"])
+    if previous.get("online") != health["online"]:
+        level = logger_config.logger.info if health["online"] else logger_config.logger.warning
+        level(
+            "[alist health] "
+            + ("AList 已恢复，业务调度已启用" if health["online"] else "AList 不可用，业务调度已暂停")
+        )
+    return health
+
+
+def reload_scheduler():
+    if not scheduler:
+        return refresh_alist_health()
+    with _scheduler_lock:
+        for job in list(scheduler.get_jobs()):
+            scheduler.remove_job(job.id)
+        _add_scheduler_jobs()
+    return refresh_alist_health()
 
 
 def scheduler_jobs():
@@ -291,6 +404,7 @@ def scheduler_jobs():
 
 
 def runtime_snapshot():
+    alist_health = api_alist.health_snapshot()
     return {
         "started_at": started_at,
         "queue_size": task_queue.qsize(),
@@ -298,4 +412,6 @@ def runtime_snapshot():
         "worker_alive": bool(worker_thread and worker_thread.is_alive()),
         "scheduler_running": bool(scheduler and scheduler.running),
         "scheduler_jobs": scheduler_jobs(),
+        "alist": alist_health,
+        "operational_jobs_paused": not alist_health["online"],
     }

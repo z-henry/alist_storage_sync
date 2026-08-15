@@ -5,15 +5,9 @@ from flask import Flask, g, jsonify, request
 
 import logger_config
 import runtime_store
-from config import Task
-from task_manager import (
-    check_dir_tree_build,
-    check_tasks,
-    dir_tree_build_tasks,
-    infer_dst_path,
-    start_checker,
-    sync_tasks,
-)
+import api_alist
+import config
+import task_manager
 from ui_routes import ui_blueprint
 from version import APP_VERSION
 
@@ -55,6 +49,22 @@ def record_inbound_request():
     return None
 
 
+@app.before_request
+def require_alist_for_task_api():
+    if request.endpoint not in TRACKED_API_ENDPOINTS or api_alist.is_online():
+        return None
+    return (
+        jsonify(
+            {
+                "status": "fail",
+                "message": "AList is unavailable; task execution is paused",
+                "alist": api_alist.health_snapshot(),
+            }
+        ),
+        503,
+    )
+
+
 @app.after_request
 def finish_inbound_request(response):
     request_id = getattr(g, "api_request_id", None)
@@ -75,19 +85,19 @@ def _request_id():
 def sync_now():
     try:
         data = request.get_json() or {}
-        task = Task("manual-sync", data.get("src", ""), data.get("dst", ""))
+        task = config.Task("manual-sync", data.get("src", ""), data.get("dst", ""))
         if not task.src:
             logger_config.logger.error("[sync_now] param src is required")
             return jsonify({"status": "fail", "message": "param src is required"}), 400
 
         if not task.dst:
-            task.dst = infer_dst_path(task.src)
+            task.dst = task_manager.infer_dst_path(task.src)
             if not task.dst:
                 logger_config.logger.error("[sync_now] param dst is required")
                 return jsonify({"status": "fail", "message": "param dst is required"}), 400
             logger_config.logger.info(f'[sync_now] inferred dst path "{task.dst}"')
 
-        run_id = check_tasks(task, True, "api", _request_id())
+        run_id = task_manager.check_tasks(task, True, "api", _request_id())
         message = f"Sync initiated from {task.src} to {task.dst}"
         logger_config.logger.info(message)
         return jsonify(
@@ -109,13 +119,13 @@ def sync_from_common(id):
         data = request.get_json() or {}
         logger_config.logger.info(f"[sync_from_common] receive: {data}")
 
-        task_matched = next((task for task in sync_tasks if task.uuid == id), None)
+        task_matched = next((task for task in config.sync_tasks if task.uuid == id), None)
         if not task_matched:
             message = f"task:{id} not found"
             logger_config.logger.error(f"[sync_from_common] {message}")
             return jsonify({"status": "fail", "message": message}), 400
 
-        task = Task(id, data.get("src", ""), data.get("dst", ""))
+        task = config.Task(id, data.get("src", ""), data.get("dst", ""))
         if not task.src:
             message = f"task:{id} param src is required"
             logger_config.logger.error(f"[sync_from_common] {message}")
@@ -133,7 +143,7 @@ def sync_from_common(id):
                 f'[sync_from_common] task:{id} inferred dst path "{task.dst}"'
             )
 
-        run_id = check_tasks(task, True, "api", _request_id())
+        run_id = task_manager.check_tasks(task, True, "api", _request_id())
         message = f"Sync initiated task:{task.uuid} from {task.src} to {task.dst}"
         logger_config.logger.info(f"[sync_from_common] {message}")
         return jsonify(
@@ -158,19 +168,19 @@ def sync_from_aliyunsub(id):
             return jsonify({"status": "fail", "message": "not subscribe update"}), 400
         logger_config.logger.info(f"[sync_from_aliyunsub] receive: {data}")
 
-        task_matched = next((task for task in sync_tasks if task.uuid == id), None)
+        task_matched = next((task for task in config.sync_tasks if task.uuid == id), None)
         if not task_matched:
             message = f"task:{id} not found"
             logger_config.logger.error(f"[sync_from_aliyunsub] {message}")
             return jsonify({"status": "fail", "message": message}), 400
 
         relative_path = data.get("title") + "/" + data.get("toFileName")
-        task = Task(
+        task = config.Task(
             id,
             task_matched.src + "/" + relative_path,
             task_matched.dst + "/" + relative_path,
         )
-        run_id = check_tasks(task, True, "api", _request_id())
+        run_id = task_manager.check_tasks(task, True, "api", _request_id())
         message = f"Sync initiated task:{task.uuid} from {task.src} to {task.dst}"
         logger_config.logger.info(f"[sync_from_aliyunsub] {message}")
         return jsonify(
@@ -198,7 +208,7 @@ def sync_from_moviepilot(id):
             return jsonify({"status": "fail", "message": "transferinfo not success"}), 400
         logger_config.logger.info(f"[sync_from_moviepilot] receive: {data}")
 
-        task_matched = next((task for task in sync_tasks if task.uuid == id), None)
+        task_matched = next((task for task in config.sync_tasks if task.uuid == id), None)
         if not task_matched:
             message = f"task:{id} not found"
             logger_config.logger.error(f"[sync_from_moviepilot] {message}")
@@ -207,12 +217,12 @@ def sync_from_moviepilot(id):
         run_ids = []
         pattern = f"^{re.escape(task_matched.mounted_path)}"
         for final_target_path in transfer_info.get("file_list_new") or []:
-            task = Task(
+            task = config.Task(
                 id,
                 re.sub(pattern, task_matched.src, final_target_path),
                 re.sub(pattern, task_matched.dst, final_target_path),
             )
-            run_ids.append(check_tasks(task, True, "api", _request_id()))
+            run_ids.append(task_manager.check_tasks(task, True, "api", _request_id()))
             logger_config.logger.info(
                 f"[sync_from_moviepilot] queued task:{id} from {task.src} to {task.dst}"
             )
@@ -236,8 +246,8 @@ def sync_from_moviepilot(id):
 def run_dir_tree_build_now():
     try:
         run_ids = [
-            check_dir_tree_build(task, "api", _request_id())
-            for task in dir_tree_build_tasks
+            task_manager.check_dir_tree_build(task, "api", _request_id())
+            for task in config.dir_tree_build_tasks
         ]
         message = f"Dir tree build initiated for {len(run_ids)} tasks"
         logger_config.logger.info(f"[dir_tree_build_now] {message}")
@@ -258,6 +268,6 @@ def run_dir_tree_build_now():
 if __name__ == "__main__":
     logger_config.logger.info(f"App version: {APP_VERSION}")
     logger_config.logger.info("Starting task checker...")
-    start_checker()
+    task_manager.start_checker()
     logger_config.logger.info("Task checker started")
     app.run(host="0.0.0.0", port=8115, threaded=True, use_reloader=False)

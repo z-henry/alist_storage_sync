@@ -1,73 +1,177 @@
-import requests
+import copy
 import json
-import logger_config  # 导入日志配置
-from config import authorization, alist_url
+import threading
+from datetime import datetime, timezone
+from time import perf_counter
 
-headers = {
-    'Authorization': authorization,
-    'Content-Type': 'application/json'
+import requests
+
+import config
+import logger_config
+
+
+_HEALTH_LOCK = threading.Lock()
+_HEALTH = {
+    "online": False,
+    "reachable": False,
+    "checked_at": None,
+    "latency_ms": None,
+    "error": "AList health check has not run yet",
+    "url": None,
 }
 
-def parse_json_response(response):
+
+def _headers():
+    return {
+        "Authorization": config.authorization,
+        "Content-Type": "application/json",
+    }
+
+
+def _set_health(online, reachable, error=None, latency_ms=None):
+    with _HEALTH_LOCK:
+        _HEALTH.update(
+            {
+                "online": bool(online),
+                "reachable": bool(reachable),
+                "checked_at": datetime.now(timezone.utc).isoformat(
+                    timespec="milliseconds"
+                ),
+                "latency_ms": latency_ms,
+                "error": str(error)[:2000] if error else None,
+                "url": config.alist_url,
+            }
+        )
+
+
+def health_snapshot():
+    with _HEALTH_LOCK:
+        return copy.deepcopy(_HEALTH)
+
+
+def is_online():
+    return health_snapshot()["online"]
+
+
+def check_health():
+    started = perf_counter()
+    timeout = config.alist_healthcheck_timeout_seconds
+    try:
+        ping = requests.get(f"{config.alist_url}/ping", timeout=timeout)
+        latency_ms = round((perf_counter() - started) * 1000)
+        if ping.status_code != 200 or ping.text.strip().lower() != "pong":
+            error = f"AList ping returned HTTP {ping.status_code}: {ping.text[:200]}"
+            _set_health(False, True, error, latency_ms)
+            return health_snapshot()
+
+        task_response = requests.get(
+            f"{config.alist_url}/api/task/copy/undone",
+            headers=_headers(),
+            timeout=timeout,
+        )
+        latency_ms = round((perf_counter() - started) * 1000)
+        payload = parse_json_response(task_response, log_error=False)
+        if task_response.status_code != 200 or not payload or payload.get("code") != 200:
+            message = payload.get("message") if payload else task_response.text[:200]
+            _set_health(
+                False,
+                True,
+                f"AList task API is unavailable: {message}",
+                latency_ms,
+            )
+            return health_snapshot()
+
+        _set_health(True, True, latency_ms=latency_ms)
+    except requests.RequestException as error:
+        _set_health(
+            False,
+            False,
+            error,
+            round((perf_counter() - started) * 1000),
+        )
+    return health_snapshot()
+
+
+def _request(method, path, **kwargs):
+    kwargs.setdefault("headers", _headers())
+    kwargs.setdefault("timeout", config.alist_request_timeout_seconds)
+    try:
+        return requests.request(method, f"{config.alist_url}{path}", **kwargs)
+    except requests.RequestException as error:
+        _set_health(False, False, error)
+        logger_config.logger.error(f"AList request failed: {method} {path}: {error}")
+        return None
+
+
+def parse_json_response(response, log_error=True):
+    if response is None:
+        return None
     try:
         return json.loads(response.text)
-    except json.JSONDecodeError as e:
-        logger_config.logger.error(f"Failed to parse JSON response: {e}")
+    except (json.JSONDecodeError, TypeError) as error:
+        if log_error:
+            logger_config.logger.error(f"Failed to parse JSON response: {error}")
         return None
+
+
+def _task_list(path, label):
+    response = _request("GET", path)
+    text = parse_json_response(response)
+    if text and text.get("code") == 200:
+        return text.get("data", [])
+    message = text.get("message") if text else "invalid JSON response"
+    logger_config.logger.error(
+        f"Failed to get {label} copy from {config.alist_url}: {message}"
+    )
+    return None
+
 
 def copy_done():
-    response = requests.get(
-        f"{alist_url}/api/task/copy/done",
-        headers=headers)
-    text = parse_json_response(response)
-    if text and text.get("code") == 200:
-        return text.get("data", [])
-    else:
-        message = text.get("message") if text else "invalid JSON response"
-        logger_config.logger.error(f"Failed to get done copy from {alist_url}: {message}")
-        return None
-    
+    return _task_list("/api/task/copy/done", "done")
+
+
 def copy_undone():
-    response = requests.get(
-        f"{alist_url}/api/task/copy/undone",
-        headers=headers)
+    return _task_list("/api/task/copy/undone", "undone")
+
+
+def list_files(path, refresh=False):
+    response = _request(
+        "POST",
+        "/api/fs/list",
+        json={"path": path, "refresh": refresh},
+    )
     text = parse_json_response(response)
     if text and text.get("code") == 200:
-        return text.get("data", [])
-    else:
-        message = text.get("message") if text else "invalid JSON response"
-        logger_config.logger.error(f"Failed to get undone copy from {alist_url}: {message}")
-        return None
-    
-def list_files(path, refresh=False):
-    response = requests.post(
-        f"{alist_url}/api/fs/list", 
-        json={"path": path, "refresh": refresh},
-        headers=headers)
-    text = parse_json_response(response)
-    if text['code'] == 200:
         return text.get("data", {}).get("content", []) or []
-    else:
-        logger_config.logger.error(f"Failed to list files from {alist_url} at {path}: {text['message']}")
-        return None
-    
+    message = text.get("message") if text else "invalid JSON response"
+    logger_config.logger.error(
+        f"Failed to list files from {config.alist_url} at {path}: {message}"
+    )
+    return None
+
+
 def get_files(path, refresh=False):
-    response = requests.post(
-        f"{alist_url}/api/fs/get", 
+    response = _request(
+        "POST",
+        "/api/fs/get",
         json={"path": path, "refresh": refresh},
-        headers=headers)
+    )
     text = parse_json_response(response)
-    if text['code'] == 200:
+    if text and text.get("code") == 200:
         return text.get("data", {})
-    else:
-        logger_config.logger.error(f"Failed to get files from {alist_url} at {path}: {text['message']}")
-        return None
+    message = text.get("message") if text else "invalid JSON response"
+    logger_config.logger.error(
+        f"Failed to get files from {config.alist_url} at {path}: {message}"
+    )
+    return None
+
 
 def copy_file(src_dir, dst_dir, file_name):
-    response = requests.post(
-        f"{alist_url}/api/fs/copy", 
+    response = _request(
+        "POST",
+        "/api/fs/copy",
         json={"src_dir": src_dir, "dst_dir": dst_dir, "names": [file_name]},
-        headers=headers)
+    )
     text = parse_json_response(response)
     if not text or text.get("code") != 200:
         message = text.get("message") if text else "invalid JSON response"
@@ -82,8 +186,6 @@ def copy_file(src_dir, dst_dir, file_name):
             "AList /api/fs/copy returned an unexpected response: data must be an object"
         )
 
-    # New AList/OpenList returns the created asynchronous tasks here. A missing
-    # tasks field means the copy completed synchronously.
     tasks = data.get("tasks", [])
     if not isinstance(tasks, list):
         raise RuntimeError(
@@ -100,10 +202,10 @@ def copy_file(src_dir, dst_dir, file_name):
 def copy_delete_tasks(task_ids):
     if not task_ids:
         return True
-    response = requests.post(
-        f"{alist_url}/api/task/copy/delete_some",
+    response = _request(
+        "POST",
+        "/api/task/copy/delete_some",
         json=task_ids,
-        headers=headers,
     )
     text = parse_json_response(response)
     if not text or text.get("code") != 200:
@@ -116,24 +218,24 @@ def copy_delete_tasks(task_ids):
         return False
     return True
 
-def remove_file(dir, file_name):
-    response = requests.post(
-        f"{alist_url}/api/fs/remove", 
-        json={"names": [file_name], "dir": dir},
-        headers=headers)
+
+def remove_file(directory, file_name):
+    response = _request(
+        "POST",
+        "/api/fs/remove",
+        json={"names": [file_name], "dir": directory},
+    )
     text = parse_json_response(response)
     return bool(text and text.get("code") == 200)
 
+
 def mkdir(path):
-    response = requests.post(
-        f"{alist_url}/api/fs/mkdir",
-        json={"path": path},
-        headers=headers)
+    response = _request("POST", "/api/fs/mkdir", json={"path": path})
     text = parse_json_response(response)
     if not text or text.get("code") != 200:
-        message = text.get("message") if text else f"HTTP {response.status_code}"
+        message = text.get("message") if text else "invalid JSON response"
         logger_config.logger.error(
-            f"Failed to create directory {path} at {alist_url}: {message}"
+            f"Failed to create directory {path} at {config.alist_url}: {message}"
         )
         return False
     return True
