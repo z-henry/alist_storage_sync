@@ -43,7 +43,7 @@ STRM 扫描使用独立任务队列，不会阻塞存储复制任务的巡检与
 
 ```sh
 ./build.sh
-# alist-storage-sync:1.15.0
+# alist-storage-sync:1.16.0
 # alist-storage-sync:latest
 ```
 
