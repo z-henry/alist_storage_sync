@@ -10,6 +10,7 @@ const labels = {
   interrupted: "意外中断",
   scheduled: "定时触发",
   api: "API 触发",
+  manual: "手动触发",
   sync: "存储同步",
   cache_refresh: "子任务巡检与后处理",
   dir_tree_build: "目录树刷新",
@@ -616,6 +617,36 @@ async function recheckAlist() {
   }
 }
 
+async function runDirTreeBuild(task, button) {
+  if (!window.confirm(`确认立即重建目录树？\n${task.parameters?.src || task.task_uuid}`)) return;
+
+  button.disabled = true;
+  button.textContent = "提交中";
+  try {
+    const response = await fetch(
+      `/ui/api/tasks/dir-tree-build/${encodeURIComponent(task.task_uuid)}/run`,
+      { method: "POST", headers: { Accept: "application/json" } },
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
+
+    const status = data.run?.status;
+    if (status === "skipped_busy") {
+      showToast("该实例仍有任务未完成，本次手动触发已跳过");
+    } else if (status === "skipped_unavailable") {
+      showToast("AList 当前不可用，本次手动触发已跳过");
+    } else {
+      showToast(`目录树重建已加入队列 · ${task.task_uuid}`, "success");
+    }
+    await refreshAll();
+  } catch (error) {
+    showToast(`目录树重建触发失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "立即重建";
+  }
+}
+
 function renderTasks(data) {
   const grid = document.getElementById("task-grid");
   grid.replaceChildren();
@@ -641,7 +672,18 @@ function renderTasks(data) {
     const next = el("span", "", `下次：${formatDate(task.next_run_time)}`);
     const latest = task.last_run ? statusNode(task.last_run.status) : statusNode("");
     if (!task.last_run) latest.textContent = "尚未运行";
-    footer.append(next, latest);
+    const footerMeta = el("div", "task-footer-meta");
+    footerMeta.append(next, latest);
+    footer.append(footerMeta);
+    if (task.task_type === "dir_tree_build") {
+      const runButton = el("button", "task-run-button", "立即重建");
+      runButton.type = "button";
+      runButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        runDirTreeBuild(task, runButton);
+      });
+      footer.append(runButton);
+    }
     card.append(footer);
     card.addEventListener("click", () => showDetail(`任务详情 · ${task.task_uuid}`, task));
     grid.append(card);

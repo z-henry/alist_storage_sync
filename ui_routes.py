@@ -3,6 +3,7 @@ import secrets
 
 from flask import Blueprint, Response, jsonify, render_template, request
 
+import api_alist
 import config
 import runtime_store
 import task_manager
@@ -166,6 +167,42 @@ def tasks():
             }
         )
     return jsonify({"tasks": items})
+
+
+@ui_blueprint.route(
+    "/ui/api/tasks/dir-tree-build/<task_uuid>/run",
+    methods=["POST"],
+)
+def run_dir_tree_build_task(task_uuid):
+    task = next(
+        (item for item in config.dir_tree_build_tasks if item.uuid == task_uuid),
+        None,
+    )
+    if task is None:
+        return jsonify({"message": f"Dir tree build task not found: {task_uuid}"}), 404
+    if not api_alist.is_online():
+        return (
+            jsonify(
+                {
+                    "message": "AList is unavailable; task execution is paused",
+                    "alist": api_alist.health_snapshot(),
+                }
+            ),
+            503,
+        )
+
+    run_id = task_manager.check_dir_tree_build(task, trigger_type="manual")
+    run = runtime_store.get_run(run_id, child_limit=1)
+    return (
+        jsonify(
+            {
+                "message": "Dir tree build task triggered",
+                "run_id": run_id,
+                "run": run,
+            }
+        ),
+        202,
+    )
 
 
 @ui_blueprint.route("/ui/api/runs")

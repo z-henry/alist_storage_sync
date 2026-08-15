@@ -171,6 +171,13 @@ tbody tr:hover { background: #171d27; }
 .param-row span { color: var(--muted); }
 .param-row code { overflow-wrap: anywhere; color: #d7dce4; }
 .task-footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; color: var(--muted); font-size: 11px; }
+.task-footer-meta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.task-run-button {
+  flex: 0 0 auto; border: 1px solid #4b8b75; border-radius: 9px; padding: 8px 12px;
+  background: #10231e; color: var(--accent); cursor: pointer; font-weight: 700;
+}
+.task-run-button:hover { background: #17352d; }
+.task-run-button:disabled { opacity: .55; cursor: wait; }
 
 .config-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 9px; }
 .config-body { padding: 22px; }
