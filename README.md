@@ -66,6 +66,9 @@ IMAGE_NAME=myrepo/alist-storage-sync ./build.sh
          - /your_path/log:/app/log
        environment:
          - TZ=Asia/Shanghai
+         - UI_USERNAME=${UI_USERNAME:-admin}
+         - UI_PASSWORD=${UI_PASSWORD}
+         - UI_SESSION_SECRET=${UI_SESSION_SECRET}
    ```
 
 3. **运行 Docker 容器**
@@ -113,6 +116,7 @@ IMAGE_NAME=myrepo/alist-storage-sync ./build.sh
 ```sh
 export UI_USERNAME=admin
 export UI_PASSWORD='请设置一个强密码'
+export UI_SESSION_SECRET='请设置一个独立的随机长字符串'
 python app.py
 ```
 
@@ -121,11 +125,12 @@ Docker Compose 用户可以在同目录的 `.env` 中设置：
 ```env
 UI_USERNAME=admin
 UI_PASSWORD=请设置一个强密码
+UI_SESSION_SECRET=请设置一个独立的随机长字符串
 ```
 
 运行历史保存在 `/app/data/runtime.db`。使用容器部署时应持久化挂载 `/app/data`；请求中的密码、Token、API Key 等字段会在入库前脱敏。
 
-Basic Auth 只负责身份校验，不加密传输内容；跨主机或公网访问时，请在应用前配置 HTTPS 反向代理。
+访问 `/ui` 会进入登录页面，认证成功后的会话有效期为 12 小时。`UI_SESSION_SECRET` 用于签名会话 Cookie；不设置时会在每次进程启动时随机生成，重启后需要重新登录。跨主机或公网访问时仍应配置 HTTPS 反向代理，并设置 `UI_COOKIE_SECURE=true`。
 
 ## 贡献
 

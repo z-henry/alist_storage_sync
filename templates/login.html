@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="alist_storage_sync 任务控制台登录">
+  <title>登录 · alist_storage_sync</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='ui.css') }}">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-card" aria-labelledby="login-title">
+      <div class="login-brand">
+        <span class="brand-mark">AS</span>
+        <div>
+          <p class="eyebrow">STORAGE SYNC</p>
+          <h1 id="login-title">登录任务控制台</h1>
+        </div>
+      </div>
+      <p class="login-copy">查看任务运行状态、手动触发任务并管理运行配置。</p>
+      {% if error %}<div class="login-error" role="alert">{{ error }}</div>{% endif %}
+      <form class="login-form" method="post" action="{{ url_for('ui.login') }}">
+        <input type="hidden" name="next" value="{{ next_target }}">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" value="{{ username }}" autocomplete="username" required {% if disabled %}disabled{% endif %}>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus {% if disabled %}disabled{% endif %}>
+        <button type="submit" {% if disabled %}disabled{% endif %}>登录</button>
+      </form>
+      <footer>{{ app_version }} · 会话有效期 12 小时</footer>
+    </section>
+  </main>
+</body>
+</html>

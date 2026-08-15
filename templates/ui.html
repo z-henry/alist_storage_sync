@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="alist_storage_sync 任务运行控制台">
+  <meta name="csrf-token" content="{{ csrf_token }}">
   <title>任务控制台 · alist_storage_sync</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='ui.css') }}">
   <script defer src="{{ url_for('static', filename='ui.js') }}"></script>
@@ -31,6 +32,10 @@
       <div class="sidebar-footer">
         <span class="live-dot" aria-hidden="true"></span>
         <span id="sidebar-service-state">正在连接服务</span>
+        <form action="{{ url_for('ui.logout') }}" method="post">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+          <button class="logout-button" type="submit">退出</button>
+        </form>
         <small>{{ app_version }}</small>
       </div>
     </aside>

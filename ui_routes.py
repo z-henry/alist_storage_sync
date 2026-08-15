@@ -1,7 +1,18 @@
+import hashlib
+import hmac
 import os
 import secrets
 
-from flask import Blueprint, Response, jsonify, render_template, request
+from flask import (
+    Blueprint,
+    current_app,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 
 import api_alist
 import config
@@ -11,6 +22,19 @@ from version import APP_VERSION
 
 
 ui_blueprint = Blueprint("ui", __name__)
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _credential_fingerprint(username, password):
+    value = f"{username}\0{password}".encode("utf-8")
+    secret_key = current_app.secret_key
+    if isinstance(secret_key, str):
+        secret_key = secret_key.encode("utf-8")
+    return hmac.new(secret_key, value, hashlib.sha256).hexdigest()
+
+
+def _is_safe_ui_target(value):
+    return bool(value and value.startswith("/ui") and not value.startswith("//"))
 
 
 def _limit(default=100):
@@ -28,29 +52,42 @@ def _offset():
 
 
 @ui_blueprint.before_request
-def require_basic_auth():
+def require_ui_session():
+    if request.endpoint == "ui.login":
+        return None
+
     expected_password = os.environ.get("UI_PASSWORD")
     if not expected_password:
-        return Response(
-            "UI is disabled. Set UI_PASSWORD to enable it.",
-            503,
-            {"Content-Type": "text/plain; charset=utf-8"},
-        )
+        return redirect(url_for("ui.login"))
 
     expected_username = os.environ.get("UI_USERNAME", "admin")
-    auth = request.authorization
-    valid = bool(
-        auth
-        and secrets.compare_digest(auth.username or "", expected_username)
-        and secrets.compare_digest(auth.password or "", expected_password)
+    expected_fingerprint = _credential_fingerprint(
+        expected_username,
+        expected_password,
     )
-    if valid:
-        return None
-    return Response(
-        "Authentication required",
-        401,
-        {"WWW-Authenticate": 'Basic realm="alist_storage_sync UI"'},
+    authenticated = secrets.compare_digest(
+        session.get("ui_auth", ""),
+        expected_fingerprint,
     )
+    if not authenticated:
+        session.clear()
+        if request.path.startswith("/ui/api/"):
+            return jsonify({"message": "Authentication required"}), 401
+        next_target = request.full_path.rstrip("?")
+        return redirect(url_for("ui.login", next=next_target))
+
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    if request.method in _WRITE_METHODS:
+        supplied_token = request.headers.get("X-CSRF-Token") or request.form.get(
+            "_csrf_token", ""
+        )
+        if not secrets.compare_digest(
+            supplied_token,
+            session.get("csrf_token", ""),
+        ):
+            return jsonify({"message": "Invalid CSRF token"}), 403
+    return None
 
 
 @ui_blueprint.after_request
@@ -62,7 +99,83 @@ def disable_ui_cache(response):
 @ui_blueprint.route("/ui")
 @ui_blueprint.route("/ui/")
 def index():
-    return render_template("ui.html", app_version=APP_VERSION)
+    return render_template(
+        "ui.html",
+        app_version=APP_VERSION,
+        csrf_token=session["csrf_token"],
+    )
+
+
+@ui_blueprint.route("/ui/login", methods=["GET", "POST"])
+def login():
+    expected_password = os.environ.get("UI_PASSWORD")
+    expected_username = os.environ.get("UI_USERNAME", "admin")
+    next_target = request.args.get("next") or request.form.get("next") or "/ui"
+    if not _is_safe_ui_target(next_target):
+        next_target = "/ui"
+
+    if not expected_password:
+        return (
+            render_template(
+                "login.html",
+                app_version=APP_VERSION,
+                username=expected_username,
+                next_target=next_target,
+                disabled=True,
+                error="UI 未启用，请先设置 UI_PASSWORD。",
+            ),
+            503,
+        )
+
+    expected_fingerprint = _credential_fingerprint(
+        expected_username,
+        expected_password,
+    )
+    if request.method == "GET" and secrets.compare_digest(
+        session.get("ui_auth", ""),
+        expected_fingerprint,
+    ):
+        return redirect(next_target)
+
+    error = None
+    status_code = 200
+    submitted_username = request.form.get("username", "")
+    if request.method == "POST":
+        submitted_password = request.form.get("password", "")
+        username_valid = secrets.compare_digest(
+            submitted_username,
+            expected_username,
+        )
+        password_valid = secrets.compare_digest(
+            submitted_password,
+            expected_password,
+        )
+        if username_valid and password_valid:
+            session.clear()
+            session.permanent = True
+            session["ui_auth"] = expected_fingerprint
+            session["csrf_token"] = secrets.token_urlsafe(32)
+            return redirect(next_target)
+        error = "用户名或密码错误。"
+        status_code = 401
+
+    return (
+        render_template(
+            "login.html",
+            app_version=APP_VERSION,
+            username=submitted_username or expected_username,
+            next_target=next_target,
+            disabled=False,
+            error=error,
+        ),
+        status_code,
+    )
+
+
+@ui_blueprint.route("/ui/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("ui.login"))
 
 
 @ui_blueprint.route("/ui/api/overview")

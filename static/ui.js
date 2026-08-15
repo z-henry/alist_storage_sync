@@ -34,6 +34,20 @@ const expandedOverviewGroups = new Set();
 const runDetailCache = new Map();
 const runDetailRequests = new Map();
 const childPageSize = 100;
+const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
+
+function handleAuthentication(response) {
+  if (response.status === 401) {
+    const next = `${window.location.pathname}${window.location.hash}`;
+    window.location.assign(`/ui/login?next=${encodeURIComponent(next)}`);
+    throw new Error("登录已失效，请重新登录");
+  }
+  return response;
+}
+
+function writeHeaders(extra = {}) {
+  return { ...extra, "X-CSRF-Token": csrfToken };
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -116,7 +130,7 @@ function showToast(message, kind = "error") {
 }
 
 async function getJson(url) {
-  const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+  const response = handleAuthentication(await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" }));
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.json();
 }
@@ -580,9 +594,10 @@ async function saveConfig() {
   try {
     const response = await fetch("/ui/api/config", {
       method: "PUT",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: writeHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
       body: JSON.stringify(parsed),
     });
+    handleAuthentication(response);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
     editor.value = JSON.stringify(data.config, null, 2);
@@ -604,7 +619,8 @@ async function recheckAlist() {
   button.disabled = true;
   button.textContent = "检测中";
   try {
-    const response = await fetch("/ui/api/alist/recheck", { method: "POST", headers: { Accept: "application/json" } });
+    const response = await fetch("/ui/api/alist/recheck", { method: "POST", headers: writeHeaders({ Accept: "application/json" }) });
+    handleAuthentication(response);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
     showToast(data.alist?.online ? `AList 在线，响应 ${data.alist.latency_ms} ms` : `AList 不可用：${data.alist?.error || "未知错误"}`, data.alist?.online ? "success" : "error");
@@ -625,8 +641,9 @@ async function runDirTreeBuild(task, button) {
   try {
     const response = await fetch(
       `/ui/api/tasks/dir-tree-build/${encodeURIComponent(task.task_uuid)}/run`,
-      { method: "POST", headers: { Accept: "application/json" } },
+      { method: "POST", headers: writeHeaders({ Accept: "application/json" }) },
     );
+    handleAuthentication(response);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
 

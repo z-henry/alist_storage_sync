@@ -1,5 +1,8 @@
 import json
+import os
 import re
+import secrets
+from datetime import timedelta
 
 from flask import Flask, g, jsonify, request
 
@@ -13,6 +16,15 @@ from version import APP_VERSION
 
 
 app = Flask(__name__)
+app.config.update(
+    SECRET_KEY=os.environ.get("UI_SESSION_SECRET") or secrets.token_hex(32),
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    SESSION_COOKIE_NAME="alist_storage_sync_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("UI_COOKIE_SECURE", "").lower()
+    in {"1", "true", "yes", "on"},
+)
 app.register_blueprint(ui_blueprint)
 
 
