@@ -29,6 +29,8 @@ let currentView = "overview";
 let refreshing = false;
 let configLoaded = false;
 let configDirty = false;
+let configWritable = false;
+let loadedConfig = null;
 const expandedRunIds = new Set();
 const expandedOverviewGroups = new Set();
 const runDetailCache = new Map();
@@ -558,17 +560,219 @@ function renderOverview(data) {
   renderOverviewRunGroups(data.recent_runs || []);
 }
 
+function cloneConfig(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function setConfigValue(id, value) {
+  document.getElementById(id).value = value ?? "";
+}
+
+function createTaskField(labelText, field, value, options = {}) {
+  const wrapper = el("label", `config-field${options.wide ? " config-field-wide" : ""}`);
+  wrapper.append(el("span", "", labelText));
+  const input = el("input");
+  input.type = options.type || "text";
+  input.dataset.configField = field;
+  input.value = value ?? "";
+  input.required = options.required !== false;
+  if (options.placeholder) input.placeholder = options.placeholder;
+  if (options.min !== undefined) input.min = options.min;
+  if (options.step !== undefined) input.step = options.step;
+  wrapper.append(input);
+  return wrapper;
+}
+
+function renumberConfigTasks(container, title) {
+  [...container.querySelectorAll(".config-task-item")].forEach((card, index) => {
+    card.querySelector(".config-task-number").textContent = `${title} ${index + 1}`;
+  });
+}
+
+function appendSyncTask(task = {}) {
+  const container = document.getElementById("config-sync-tasks");
+  const card = el("article", "config-task-item");
+  card.configOriginal = cloneConfig(task);
+  const heading = el("div", "config-task-heading");
+  heading.append(el("strong", "config-task-number", "同步任务"));
+  const remove = el("button", "config-remove-button", "删除");
+  remove.type = "button";
+  remove.addEventListener("click", () => {
+    card.remove();
+    renumberConfigTasks(container, "同步任务");
+    markConfigDirty();
+  });
+  heading.append(remove);
+  const fields = el("div", "config-field-grid");
+  fields.append(
+    createTaskField("实例 UUID", "uuid", task.uuid, { placeholder: "例如 movie-pilot" }),
+    createTaskField("Cron", "cron", task.cron ?? "0 * * * *", { placeholder: "0 * * * *" }),
+    createTaskField("源路径", "src", task.src, { wide: true, placeholder: "/source/path" }),
+    createTaskField("目标路径", "dst", task.dst, { wide: true, placeholder: "/target/path" }),
+    createTaskField("本地挂载路径", "mounted_path", task.mounted_path ?? "", {
+      wide: true,
+      required: false,
+      placeholder: "MoviePilot 回调需要时填写",
+    }),
+  );
+  card.append(heading, fields);
+  container.append(card);
+  renumberConfigTasks(container, "同步任务");
+}
+
+function appendTreeTask(task = {}) {
+  const container = document.getElementById("config-tree-tasks");
+  const card = el("article", "config-task-item");
+  card.configOriginal = cloneConfig(task);
+  const heading = el("div", "config-task-heading");
+  heading.append(el("strong", "config-task-number", "刷新任务"));
+  const remove = el("button", "config-remove-button", "删除");
+  remove.type = "button";
+  remove.addEventListener("click", () => {
+    card.remove();
+    renumberConfigTasks(container, "刷新任务");
+    markConfigDirty();
+  });
+  heading.append(remove);
+  const fields = el("div", "config-field-grid");
+  fields.append(
+    createTaskField("实例 UUID", "uuid", task.uuid, { placeholder: "例如 refresh-115" }),
+    createTaskField("Cron", "cron", task.cron ?? "0 12 * * *", { placeholder: "0 12 * * *" }),
+    createTaskField("目录路径", "src", task.src, { wide: true, placeholder: "/115" }),
+    createTaskField("QPS", "qps", task.qps ?? 0.1, { type: "number", min: "0.000001", step: "any" }),
+  );
+  const runAtStart = el("label", "config-inline-switch config-task-start");
+  const checkbox = el("input");
+  checkbox.type = "checkbox";
+  checkbox.dataset.configField = "run_at_start";
+  checkbox.checked = Boolean(task.run_at_start);
+  runAtStart.append(checkbox, el("span", "", "应用启动时执行一次"));
+  card.append(heading, fields, runAtStart);
+  container.append(card);
+  renumberConfigTasks(container, "刷新任务");
+}
+
+function taskValue(card, field) {
+  const input = card.querySelector(`[data-config-field="${field}"]`);
+  if (input.type === "checkbox") return input.checked;
+  if (input.type === "number") return Number(input.value);
+  return input.value.trim();
+}
+
+function collectConfigForm() {
+  const result = cloneConfig(loadedConfig);
+  result.alist = {
+    ...(result.alist || {}),
+    url: document.getElementById("config-alist-url").value.trim(),
+    apikey: document.getElementById("config-alist-apikey").value,
+    task_missing_timeout_seconds: Number(document.getElementById("config-task-timeout").value),
+    request_timeout_seconds: Number(document.getElementById("config-request-timeout").value),
+    healthcheck_interval_seconds: Number(document.getElementById("config-health-interval").value),
+    healthcheck_timeout_seconds: Number(document.getElementById("config-health-timeout").value),
+  };
+  result.tasks = [...document.querySelectorAll("#config-sync-tasks .config-task-item")].map((card) => ({
+    ...(card.configOriginal || {}),
+    uuid: taskValue(card, "uuid"),
+    src: taskValue(card, "src"),
+    dst: taskValue(card, "dst"),
+    cron: taskValue(card, "cron"),
+    mounted_path: taskValue(card, "mounted_path"),
+  }));
+  result.cover_dst_when_diff = document.getElementById("config-cover-dst").checked;
+  result.delete_src_when_same = document.getElementById("config-delete-src").checked;
+  result.dir_tree_build_tasks = [...document.querySelectorAll("#config-tree-tasks .config-task-item")].map((card) => ({
+    ...(card.configOriginal || {}),
+    uuid: taskValue(card, "uuid"),
+    src: taskValue(card, "src"),
+    cron: taskValue(card, "cron"),
+    qps: taskValue(card, "qps"),
+    run_at_start: taskValue(card, "run_at_start"),
+  }));
+  result.emby = {
+    ...(result.emby || {}),
+    enabled: document.getElementById("config-emby-enabled").checked,
+    url: document.getElementById("config-emby-url").value.trim(),
+    apikey: document.getElementById("config-emby-apikey").value,
+    mount_path: document.getElementById("config-emby-mount").value.trim(),
+  };
+  result.webhook = {
+    ...(result.webhook || {}),
+    enabled: document.getElementById("config-webhook-enabled").checked,
+    url: document.getElementById("config-webhook-url").value.trim(),
+  };
+  return result;
+}
+
+function updateConfigPreview() {
+  if (!loadedConfig) return;
+  document.getElementById("config-editor").value = JSON.stringify(collectConfigForm(), null, 2);
+}
+
+function updateIntegrationRequirements() {
+  const embyEnabled = document.getElementById("config-emby-enabled").checked;
+  const webhookEnabled = document.getElementById("config-webhook-enabled").checked;
+  document.getElementById("config-emby-module").classList.toggle("config-module-disabled", !embyEnabled);
+  document.getElementById("config-webhook-module").classList.toggle("config-module-disabled", !webhookEnabled);
+  document.getElementById("config-emby-url").required = embyEnabled;
+  document.getElementById("config-emby-apikey").required = embyEnabled;
+  document.getElementById("config-webhook-url").required = webhookEnabled;
+}
+
+function renderConfigForm(value) {
+  loadedConfig = cloneConfig(value);
+  const alist = value.alist || {};
+  setConfigValue("config-alist-url", alist.url);
+  setConfigValue("config-alist-apikey", alist.apikey);
+  setConfigValue("config-task-timeout", alist.task_missing_timeout_seconds ?? 600);
+  setConfigValue("config-request-timeout", alist.request_timeout_seconds ?? 15);
+  setConfigValue("config-health-interval", alist.healthcheck_interval_seconds ?? 15);
+  setConfigValue("config-health-timeout", alist.healthcheck_timeout_seconds ?? 3);
+  document.getElementById("config-cover-dst").checked = Boolean(value.cover_dst_when_diff);
+  document.getElementById("config-delete-src").checked = Boolean(value.delete_src_when_same);
+
+  const syncContainer = document.getElementById("config-sync-tasks");
+  syncContainer.replaceChildren();
+  (value.tasks || []).forEach(appendSyncTask);
+  const treeContainer = document.getElementById("config-tree-tasks");
+  treeContainer.replaceChildren();
+  (value.dir_tree_build_tasks || []).forEach(appendTreeTask);
+
+  const emby = value.emby || {};
+  document.getElementById("config-emby-enabled").checked = Boolean(emby.enabled);
+  setConfigValue("config-emby-url", emby.url);
+  setConfigValue("config-emby-apikey", emby.apikey);
+  setConfigValue("config-emby-mount", emby.mount_path);
+  const webhook = value.webhook || {};
+  document.getElementById("config-webhook-enabled").checked = Boolean(webhook.enabled);
+  setConfigValue("config-webhook-url", webhook.url);
+  document.querySelectorAll("[data-reveal]").forEach((button) => {
+    document.getElementById(button.dataset.reveal).type = "password";
+    button.textContent = "显示";
+  });
+  updateIntegrationRequirements();
+  updateConfigPreview();
+}
+
+function markConfigDirty() {
+  if (!configLoaded) return;
+  configDirty = true;
+  const state = document.getElementById("config-state");
+  state.textContent = "有未保存修改";
+  state.classList.add("dirty");
+  updateConfigPreview();
+}
+
 async function loadConfig(force = false) {
   if (configDirty && !force) return;
-  const editor = document.getElementById("config-editor");
   const state = document.getElementById("config-state");
   state.textContent = "正在载入";
   try {
     const data = await getJson("/ui/api/config");
-    editor.value = JSON.stringify(data.config, null, 2);
+    renderConfigForm(data.config);
     document.getElementById("config-path").textContent = `配置路径：${data.path}`;
-    document.getElementById("config-save").disabled = !data.writable;
-    state.textContent = data.writable ? "已载入" : "配置文件不可写";
+    configWritable = data.writable;
+    document.getElementById("config-save").disabled = !configWritable;
+    state.textContent = configWritable ? "已载入" : "配置文件不可写";
     state.classList.remove("dirty");
     configLoaded = true;
     configDirty = false;
@@ -579,15 +783,13 @@ async function loadConfig(force = false) {
 }
 
 async function saveConfig() {
-  const editor = document.getElementById("config-editor");
+  const form = document.getElementById("config-form");
   const button = document.getElementById("config-save");
-  let parsed;
-  try {
-    parsed = JSON.parse(editor.value);
-  } catch (error) {
-    showToast(`JSON 格式错误：${error.message}`);
+  if (!form.reportValidity()) {
+    showToast("请先填写所有必填字段，并检查数字和 URL 格式");
     return;
   }
+  const parsed = collectConfigForm();
 
   button.disabled = true;
   button.textContent = "保存中";
@@ -600,7 +802,7 @@ async function saveConfig() {
     handleAuthentication(response);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
-    editor.value = JSON.stringify(data.config, null, 2);
+    renderConfigForm(data.config);
     configDirty = false;
     document.getElementById("config-state").textContent = "已保存并应用";
     document.getElementById("config-state").classList.remove("dirty");
@@ -609,7 +811,7 @@ async function saveConfig() {
   } catch (error) {
     showToast(`保存失败：${error.message}`);
   } finally {
-    button.disabled = false;
+    button.disabled = !configWritable;
     button.textContent = "保存并应用";
   }
 }
@@ -819,13 +1021,37 @@ document.getElementById("refresh-button").addEventListener("click", refreshAll);
 document.getElementById("run-status-filter").addEventListener("change", refreshAll);
 document.getElementById("run-instance-filter").addEventListener("change", refreshAll);
 document.getElementById("run-time-filter").addEventListener("change", refreshAll);
-document.getElementById("config-editor").addEventListener("input", () => {
-  configDirty = true;
-  const state = document.getElementById("config-state");
-  state.textContent = "有未保存修改";
-  state.classList.add("dirty");
+document.getElementById("config-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveConfig();
 });
-document.getElementById("config-reload").addEventListener("click", () => loadConfig(true));
+document.getElementById("config-form").addEventListener("input", markConfigDirty);
+document.getElementById("config-form").addEventListener("change", (event) => {
+  if (["config-emby-enabled", "config-webhook-enabled"].includes(event.target.id)) {
+    updateIntegrationRequirements();
+  }
+  markConfigDirty();
+});
+document.getElementById("config-add-sync").addEventListener("click", () => {
+  appendSyncTask({ uuid: `sync-${Date.now().toString(36)}`, cron: "0 * * * *" });
+  markConfigDirty();
+});
+document.getElementById("config-add-tree").addEventListener("click", () => {
+  appendTreeTask({ uuid: `refresh-${Date.now().toString(36)}`, cron: "0 12 * * *", qps: 0.1 });
+  markConfigDirty();
+});
+document.querySelectorAll("[data-reveal]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const input = document.getElementById(button.dataset.reveal);
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    button.textContent = reveal ? "隐藏" : "显示";
+  });
+});
+document.getElementById("config-reload").addEventListener("click", () => {
+  if (configDirty && !window.confirm("放弃尚未保存的配置修改并重新载入？")) return;
+  loadConfig(true);
+});
 document.getElementById("config-save").addEventListener("click", saveConfig);
 document.getElementById("alist-recheck").addEventListener("click", recheckAlist);
 document.getElementById("dialog-close").addEventListener("click", () => document.getElementById("detail-dialog").close());

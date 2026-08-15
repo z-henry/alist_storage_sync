@@ -153,16 +153,108 @@
             <div class="config-actions">
               <button class="text-button" id="config-reload" type="button">重新载入</button>
               <button class="refresh-button" id="alist-recheck" type="button">检测 AList</button>
-              <button class="save-button" id="config-save" type="button">保存并应用</button>
+              <button class="save-button" id="config-save" type="button" disabled>保存并应用</button>
             </div>
           </div>
           <div class="config-body">
             <div class="config-notice">
               <strong>保存后立即生效</strong>
-              <span>将校验 JSON、Cron 和必填参数，写回当前 CONFIG_PATH，并重建后续调度。已排队或正在执行的任务不会修改。</span>
+              <span>按模块修改运行参数，保存时会校验必填项、URL、Cron 和任务 UUID，并重建后续调度。已排队或正在执行的任务不会修改。</span>
             </div>
-            <label for="config-editor">config.json</label>
-            <textarea id="config-editor" spellcheck="false" autocomplete="off" aria-label="编辑 config.json"></textarea>
+            <form class="config-modules" id="config-form">
+              <section class="config-module">
+                <div class="config-module-heading">
+                  <div><p class="eyebrow">CONNECTION</p><h3>AList 连接</h3></div>
+                  <span>服务地址、API Key 与请求策略</span>
+                </div>
+                <div class="config-field-grid">
+                  <label class="config-field config-field-wide">
+                    <span>AList 地址</span>
+                    <input id="config-alist-url" type="url" placeholder="http://openlist:5244" required>
+                  </label>
+                  <label class="config-field config-field-wide">
+                    <span>API Key</span>
+                    <span class="config-secret">
+                      <input id="config-alist-apikey" type="password" autocomplete="new-password" required>
+                      <button type="button" data-reveal="config-alist-apikey">显示</button>
+                    </span>
+                  </label>
+                  <label class="config-field"><span>任务丢失超时（秒）</span><input id="config-task-timeout" type="number" min="0" step="1" required></label>
+                  <label class="config-field"><span>普通请求超时（秒）</span><input id="config-request-timeout" type="number" min="1" step="any" required></label>
+                  <label class="config-field"><span>健康检查间隔（秒）</span><input id="config-health-interval" type="number" min="5" step="any" required></label>
+                  <label class="config-field"><span>健康检查超时（秒）</span><input id="config-health-timeout" type="number" min="1" step="any" required></label>
+                </div>
+              </section>
+
+              <section class="config-module">
+                <div class="config-module-heading">
+                  <div><p class="eyebrow">SYNC INSTANCES</p><h3>同步任务</h3></div>
+                  <button class="config-add-button" id="config-add-sync" type="button">＋ 新增同步任务</button>
+                </div>
+                <div class="config-task-list" id="config-sync-tasks"></div>
+              </section>
+
+              <section class="config-module">
+                <div class="config-module-heading">
+                  <div><p class="eyebrow">SYNC BEHAVIOR</p><h3>同步行为</h3></div>
+                  <span>控制目标覆盖与源文件清理</span>
+                </div>
+                <div class="config-switches">
+                  <label class="config-switch">
+                    <input id="config-cover-dst" type="checkbox">
+                    <span><strong>目标不一致时覆盖</strong><small>源文件与目标文件不同时覆盖目标文件</small></span>
+                  </label>
+                  <label class="config-switch config-switch-danger">
+                    <input id="config-delete-src" type="checkbox">
+                    <span><strong>相同后删除源文件</strong><small>确认目标文件一致后删除源文件，请谨慎启用</small></span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="config-module">
+                <div class="config-module-heading">
+                  <div><p class="eyebrow">DIRECTORY TREE</p><h3>目录树刷新任务</h3></div>
+                  <button class="config-add-button" id="config-add-tree" type="button">＋ 新增刷新任务</button>
+                </div>
+                <div class="config-task-list" id="config-tree-tasks"></div>
+              </section>
+
+              <div class="config-module-pair">
+                <section class="config-module" id="config-emby-module">
+                  <div class="config-module-heading">
+                    <div><p class="eyebrow">MEDIA SERVER</p><h3>Emby</h3></div>
+                    <label class="config-inline-switch"><input id="config-emby-enabled" type="checkbox"><span>启用</span></label>
+                  </div>
+                  <div class="config-field-grid config-field-grid-single">
+                    <label class="config-field"><span>Emby 地址</span><input id="config-emby-url" type="url" placeholder="http://emby:8096"></label>
+                    <label class="config-field">
+                      <span>API Key</span>
+                      <span class="config-secret">
+                        <input id="config-emby-apikey" type="password" autocomplete="new-password">
+                        <button type="button" data-reveal="config-emby-apikey">显示</button>
+                      </span>
+                    </label>
+                    <label class="config-field"><span>媒体挂载路径</span><input id="config-emby-mount" type="text" placeholder="/media/webdav"></label>
+                  </div>
+                </section>
+
+                <section class="config-module" id="config-webhook-module">
+                  <div class="config-module-heading">
+                    <div><p class="eyebrow">OUTBOUND EVENT</p><h3>Webhook</h3></div>
+                    <label class="config-inline-switch"><input id="config-webhook-enabled" type="checkbox"><span>启用</span></label>
+                  </div>
+                  <div class="config-field-grid config-field-grid-single">
+                    <label class="config-field"><span>Webhook 地址</span><input id="config-webhook-url" type="url" placeholder="https://example.com/hook"></label>
+                  </div>
+                </section>
+              </div>
+            </form>
+
+            <details class="config-json-preview">
+              <summary>高级：查看最终 config.json</summary>
+              <p>这里仅用于核对最终内容；未知扩展字段会在表单保存时原样保留。</p>
+              <textarea id="config-editor" spellcheck="false" readonly aria-label="最终 config.json 预览"></textarea>
+            </details>
             <div class="config-meta">
               <span id="config-path">配置路径：—</span>
               <span id="config-state">尚未载入</span>
