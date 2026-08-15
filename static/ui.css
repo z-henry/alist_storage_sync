@@ -195,15 +195,16 @@ tbody tr:hover { background: #171d27; }
 .config-module-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 17px; }
 .config-module-heading h3 { margin: 0; font-size: 17px; }
 .config-module-heading > span { color: var(--muted); font-size: 11px; text-align: right; }
+.config-module-note { margin: -8px 0 16px; color: var(--muted); font-size: 11px; }
 .config-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .config-field-grid-single { grid-template-columns: 1fr; }
 .config-field { display: grid; gap: 7px; min-width: 0; color: var(--muted); font-size: 11px; }
 .config-field-wide { grid-column: 1 / -1; }
-.config-field input {
+.config-field input, .config-field select {
   min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px;
   background: #0a1017; color: var(--text); outline: none;
 }
-.config-field input:focus { border-color: #4b8b75; box-shadow: 0 0 0 3px #8cf0c512; }
+.config-field input:focus, .config-field select:focus { border-color: #4b8b75; box-shadow: 0 0 0 3px #8cf0c512; }
 .config-field input:invalid:not(:placeholder-shown) { border-color: #713e42; }
 .config-secret { display: flex; min-width: 0; }
 .config-secret input { border-radius: 10px 0 0 10px; }

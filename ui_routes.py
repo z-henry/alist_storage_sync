@@ -188,6 +188,9 @@ def overview():
     instance_keys.extend(
         ("dir_tree_build", task.uuid) for task in config.dir_tree_build_tasks
     )
+    instance_keys.extend(
+        ("alist2strm", task.uuid) for task in config.alist2strm_tasks
+    )
     instance_keys = list(dict.fromkeys(instance_keys))
     known_instances = set(instance_keys)
     for task_type, task_uuid in instance_keys:
@@ -246,6 +249,23 @@ def tasks():
             }
         )
 
+    for task in config.alist2strm_tasks:
+        job = jobs.get(f"alist2strm:{task.uuid}", {})
+        items.append(
+            {
+                "task_uuid": task.uuid,
+                "task_type": "alist2strm",
+                "name": f"STRM 生成 {task.uuid}",
+                "schedule": task.cron,
+                "next_run_time": job.get("next_run_time"),
+                "parameters": {
+                    **task.parameters(),
+                    "output_root": config.strm_output_root,
+                },
+                "last_run": latest.get(("alist2strm", task.uuid)),
+            }
+        )
+
     cache_job = jobs.get("system:cache-refresh", {})
     items.append(
         {
@@ -280,6 +300,42 @@ def tasks():
             }
         )
     return jsonify({"tasks": items})
+
+
+@ui_blueprint.route(
+    "/ui/api/tasks/alist2strm/<task_uuid>/run",
+    methods=["POST"],
+)
+def run_alist2strm_task(task_uuid):
+    task = next(
+        (item for item in config.alist2strm_tasks if item.uuid == task_uuid),
+        None,
+    )
+    if task is None:
+        return jsonify({"message": f"Alist2Strm task not found: {task_uuid}"}), 404
+    if not api_alist.is_online():
+        return (
+            jsonify(
+                {
+                    "message": "AList is unavailable; task execution is paused",
+                    "alist": api_alist.health_snapshot(),
+                }
+            ),
+            503,
+        )
+
+    run_id = task_manager.check_alist2strm(task, trigger_type="manual")
+    run = runtime_store.get_run(run_id, child_limit=1)
+    return (
+        jsonify(
+            {
+                "message": "Alist2Strm task triggered",
+                "run_id": run_id,
+                "run": run,
+            }
+        ),
+        202,
+    )
 
 
 @ui_blueprint.route(

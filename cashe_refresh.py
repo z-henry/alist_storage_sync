@@ -8,6 +8,7 @@ import api_webhook
 import config
 import logger_config
 import runtime_store
+from features.alist2strm.trigger import build_strm_triggers
 
 
 def get_path(tasks):
@@ -96,6 +97,7 @@ def perform_cache_refresh(tasks, run_id=None):
         "failed_paths": [],
         "callbacks": [],
         "cleanup": cleanup_tracked_tasks(tasks),
+        "alist2strm_triggers": [],
     }
     if not result["cleanup"]["success"]:
         result["success"] = False
@@ -122,7 +124,12 @@ def perform_cache_refresh(tasks, run_id=None):
             return result
         logger_config.logger.info("Succeed to notify Emby")
 
-    if config.webhook_enable:
+    result["alist2strm_triggers"] = build_strm_triggers(
+        config.alist2strm_tasks,
+        unique_paths,
+    )
+
+    if config.webhook_enable and not result["alist2strm_triggers"]:
         detail = api_webhook.media_update_detail(unique_paths)
         callback = _record_callback("webhook", config.webhook_url, detail, run_id)
         result["callbacks"].append(callback)
@@ -131,5 +138,13 @@ def perform_cache_refresh(tasks, run_id=None):
             logger_config.logger.error("Failed to call webhook")
             return result
         logger_config.logger.info("Succeed to call webhook")
+    elif config.webhook_enable:
+        result["webhook_skipped"] = {
+            "reason": "handled_by_internal_alist2strm",
+            "matched_task_count": len(result["alist2strm_triggers"]),
+        }
+        logger_config.logger.info(
+            "Skip webhook because matching internal Alist2Strm tasks will handle the paths"
+        )
 
     return result

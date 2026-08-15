@@ -9,11 +9,13 @@ const labels = {
   skipped_unavailable: "AList 不可用",
   interrupted: "意外中断",
   scheduled: "定时触发",
+  postprocess: "同步后触发",
   api: "API 触发",
   manual: "手动触发",
   sync: "存储同步",
   cache_refresh: "子任务巡检与后处理",
   dir_tree_build: "目录树刷新",
+  alist2strm: "STRM 生成",
 };
 
 const viewMeta = {
@@ -78,6 +80,7 @@ function parseInstanceKey(value) {
 
 function instanceLabel(taskType, taskUuid) {
   if (taskType === "sync") return `同步任务 · ${taskUuid}`;
+  if (taskType === "alist2strm") return `STRM 生成 · ${taskUuid}`;
   if (taskType === "cache_refresh") return `子任务巡检与后处理 · ${taskUuid}`;
   if (taskType === "dir_tree_build") return `目录树刷新 · ${taskUuid}`;
   return `${label(taskType)} · ${taskUuid}`;
@@ -444,7 +447,7 @@ function renderOverviewRunGroups(runs) {
     }
     groups.get(key).runs.push(run);
   });
-  const order = ["sync", "cache_refresh", "dir_tree_build"];
+  const order = ["sync", "alist2strm", "cache_refresh", "dir_tree_build"];
   [...groups.entries()].sort(([, a], [, b]) => {
     const ai = order.indexOf(a.taskType);
     const bi = order.indexOf(b.taskType);
@@ -578,8 +581,24 @@ function createTaskField(labelText, field, value, options = {}) {
   input.required = options.required !== false;
   if (options.placeholder) input.placeholder = options.placeholder;
   if (options.min !== undefined) input.min = options.min;
+  if (options.max !== undefined) input.max = options.max;
   if (options.step !== undefined) input.step = options.step;
   wrapper.append(input);
+  return wrapper;
+}
+
+function createTaskSelect(labelText, field, value, options) {
+  const wrapper = el("label", "config-field");
+  wrapper.append(el("span", "", labelText));
+  const select = el("select");
+  select.dataset.configField = field;
+  Object.entries(options).forEach(([optionValue, optionLabel]) => {
+    const option = el("option", "", optionLabel);
+    option.value = optionValue;
+    option.selected = optionValue === value;
+    select.append(option);
+  });
+  wrapper.append(select);
   return wrapper;
 }
 
@@ -618,6 +637,59 @@ function appendSyncTask(task = {}) {
   card.append(heading, fields);
   container.append(card);
   renumberConfigTasks(container, "同步任务");
+}
+
+function appendStrmTask(task = {}) {
+  const container = document.getElementById("config-strm-tasks");
+  const card = el("article", "config-task-item");
+  card.configOriginal = cloneConfig(task);
+  const heading = el("div", "config-task-heading");
+  heading.append(el("strong", "config-task-number", "STRM 任务"));
+  const remove = el("button", "config-remove-button", "删除");
+  remove.type = "button";
+  remove.addEventListener("click", () => {
+    card.remove();
+    renumberConfigTasks(container, "STRM 任务");
+    markConfigDirty();
+  });
+  heading.append(remove);
+  const fields = el("div", "config-field-grid");
+  fields.append(
+    createTaskField("实例 UUID", "uuid", task.uuid, { placeholder: "例如 movies-strm" }),
+    createTaskField("Cron", "cron", task.cron ?? "0 */6 * * *", { placeholder: "0 */6 * * *" }),
+    createTaskField("AList 源目录", "source_dir", task.source_dir, { wide: true, placeholder: "/媒体/电影" }),
+    createTaskField("目标子目录", "target_dir", task.target_dir, { wide: true, placeholder: "movies" }),
+    createTaskSelect("STRM 内容", "mode", task.mode ?? "alist_url", {
+      alist_url: "AList 直链",
+      raw_url: "存储原始链接",
+      alist_path: "AList 路径",
+    }),
+    createTaskField("其他下载扩展名", "other_extensions", (task.other_extensions || []).join(","), {
+      placeholder: ".xml,.txt",
+      required: false,
+    }),
+    createTaskField("处理并发数", "max_workers", task.max_workers ?? 20, { type: "number", min: "1", max: "100", step: "1" }),
+    createTaskField("下载并发数", "max_downloaders", task.max_downloaders ?? 3, { type: "number", min: "1", max: "20", step: "1" }),
+  );
+  const switches = el("div", "config-switches config-task-start");
+  [
+    ["flatten_mode", "平铺模式"],
+    ["subtitle", "下载字幕"],
+    ["image", "下载图片"],
+    ["nfo", "下载 NFO"],
+    ["overwrite", "覆盖已有文件"],
+  ].forEach(([field, title]) => {
+    const wrapper = el("label", "config-inline-switch");
+    const input = el("input");
+    input.type = "checkbox";
+    input.dataset.configField = field;
+    input.checked = Boolean(task[field]);
+    wrapper.append(input, el("span", "", title));
+    switches.append(wrapper);
+  });
+  card.append(heading, fields, switches);
+  container.append(card);
+  renumberConfigTasks(container, "STRM 任务");
 }
 
 function appendTreeTask(task = {}) {
@@ -678,6 +750,22 @@ function collectConfigForm() {
     cron: taskValue(card, "cron"),
     mounted_path: taskValue(card, "mounted_path"),
   }));
+  result.alist2strm_tasks = [...document.querySelectorAll("#config-strm-tasks .config-task-item")].map((card) => ({
+    ...(card.configOriginal || {}),
+    uuid: taskValue(card, "uuid"),
+    source_dir: taskValue(card, "source_dir"),
+    target_dir: taskValue(card, "target_dir"),
+    cron: taskValue(card, "cron"),
+    mode: taskValue(card, "mode"),
+    flatten_mode: taskValue(card, "flatten_mode"),
+    subtitle: taskValue(card, "subtitle"),
+    image: taskValue(card, "image"),
+    nfo: taskValue(card, "nfo"),
+    overwrite: taskValue(card, "overwrite"),
+    other_extensions: taskValue(card, "other_extensions").split(",").map((value) => value.trim()).filter(Boolean),
+    max_workers: taskValue(card, "max_workers"),
+    max_downloaders: taskValue(card, "max_downloaders"),
+  }));
   result.cover_dst_when_diff = document.getElementById("config-cover-dst").checked;
   result.delete_src_when_same = document.getElementById("config-delete-src").checked;
   result.dir_tree_build_tasks = [...document.querySelectorAll("#config-tree-tasks .config-task-item")].map((card) => ({
@@ -733,6 +821,9 @@ function renderConfigForm(value) {
   const syncContainer = document.getElementById("config-sync-tasks");
   syncContainer.replaceChildren();
   (value.tasks || []).forEach(appendSyncTask);
+  const strmContainer = document.getElementById("config-strm-tasks");
+  strmContainer.replaceChildren();
+  (value.alist2strm_tasks || []).forEach(appendStrmTask);
   const treeContainer = document.getElementById("config-tree-tasks");
   treeContainer.replaceChildren();
   (value.dir_tree_build_tasks || []).forEach(appendTreeTask);
@@ -835,6 +926,38 @@ async function recheckAlist() {
   }
 }
 
+
+async function runAlist2Strm(task, button) {
+  if (!window.confirm(`确认立即生成 STRM？\n${task.parameters?.source_dir || task.task_uuid}`)) return;
+
+  button.disabled = true;
+  button.textContent = "提交中";
+  try {
+    const response = await fetch(
+      `/ui/api/tasks/alist2strm/${encodeURIComponent(task.task_uuid)}/run`,
+      { method: "POST", headers: writeHeaders({ Accept: "application/json" }) },
+    );
+    handleAuthentication(response);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
+
+    const status = data.run?.status;
+    if (status === "skipped_busy") {
+      showToast("该 STRM 实例仍在执行，本次触发已跳过");
+    } else if (status === "skipped_unavailable") {
+      showToast("AList 当前不可用，本次触发已跳过");
+    } else {
+      showToast(`STRM 生成已加入独立队列 · ${task.task_uuid}`, "success");
+    }
+    await refreshAll();
+  } catch (error) {
+    showToast(`STRM 任务触发失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "立即生成";
+  }
+}
+
 async function runDirTreeBuild(task, button) {
   if (!window.confirm(`确认立即重建目录树？\n${task.parameters?.src || task.task_uuid}`)) return;
 
@@ -900,6 +1023,15 @@ function renderTasks(data) {
       runButton.addEventListener("click", (event) => {
         event.stopPropagation();
         runDirTreeBuild(task, runButton);
+      });
+      footer.append(runButton);
+    }
+    if (task.task_type === "alist2strm") {
+      const runButton = el("button", "task-run-button", "立即生成");
+      runButton.type = "button";
+      runButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        runAlist2Strm(task, runButton);
       });
       footer.append(runButton);
     }
@@ -1034,6 +1166,16 @@ document.getElementById("config-form").addEventListener("change", (event) => {
 });
 document.getElementById("config-add-sync").addEventListener("click", () => {
   appendSyncTask({ uuid: `sync-${Date.now().toString(36)}`, cron: "0 * * * *" });
+  markConfigDirty();
+});
+document.getElementById("config-add-strm").addEventListener("click", () => {
+  appendStrmTask({
+    uuid: `strm-${Date.now().toString(36)}`,
+    cron: "0 */6 * * *",
+    mode: "alist_url",
+    max_workers: 20,
+    max_downloaders: 3,
+  });
   markConfigDirty();
 });
 document.getElementById("config-add-tree").addEventListener("click", () => {

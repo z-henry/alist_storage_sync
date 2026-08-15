@@ -17,6 +17,7 @@ from cashe_refresh import (
     recursive_refresh_cache_all,
 )
 from sync import perform_sync
+from features.alist2strm.service import run_alist2strm
 
 
 @dataclass
@@ -33,23 +34,25 @@ class QueueItem:
 
 
 task_queue = queue.Queue()
+strm_task_queue = queue.Queue()
 scheduler = None
 worker_thread = None
+strm_worker_thread = None
 started_at = None
 _scheduler_lock = threading.RLock()
 HEALTH_JOB_ID = "system:alist-health"
 
 
-def task_worker():
+def task_worker(work_queue):
     while True:
-        item = task_queue.get()
+        item = work_queue.get()
         if not api_alist.is_online():
             runtime_store.update_run(
                 item.run_id,
                 "skipped_unavailable",
                 result={"reason": "alist_unavailable", "health": api_alist.health_snapshot()},
             )
-            task_queue.task_done()
+            work_queue.task_done()
             continue
         runtime_store.update_run(item.run_id, "running")
         try:
@@ -64,18 +67,39 @@ def task_worker():
             logger_config.logger.exception(f"[task worker] 任务执行时发生错误：{error}")
             runtime_store.update_run(item.run_id, "failed", error=error)
         finally:
-            task_queue.task_done()
+            work_queue.task_done()
 
 
 def start_worker():
-    global worker_thread
-    if worker_thread and worker_thread.is_alive():
-        return
-    worker_thread = threading.Thread(target=task_worker, daemon=True, name="task-worker")
-    worker_thread.start()
+    global worker_thread, strm_worker_thread
+    if not worker_thread or not worker_thread.is_alive():
+        worker_thread = threading.Thread(
+            target=task_worker,
+            args=[task_queue],
+            daemon=True,
+            name="task-worker",
+        )
+        worker_thread.start()
+    if not strm_worker_thread or not strm_worker_thread.is_alive():
+        strm_worker_thread = threading.Thread(
+            target=task_worker,
+            args=[strm_task_queue],
+            daemon=True,
+            name="alist2strm-worker",
+        )
+        strm_worker_thread.start()
 
 
-def _enqueue(task_uuid, task_type, trigger_type, parameters, func, args, request_id=None):
+def _enqueue(
+    task_uuid,
+    task_type,
+    trigger_type,
+    parameters,
+    func,
+    args,
+    request_id=None,
+    work_queue=None,
+):
     if not api_alist.is_online():
         run_id = runtime_store.create_run(
             task_uuid=task_uuid,
@@ -110,7 +134,8 @@ def _enqueue(task_uuid, task_type, trigger_type, parameters, func, args, request
         )
         return run_id
 
-    task_queue.put(QueueItem(run_id=run_id, func=func, args=args))
+    destination_queue = task_queue if work_queue is None else work_queue
+    destination_queue.put(QueueItem(run_id=run_id, func=func, args=args))
     logger_config.logger.info(
         f"[task queue] 添加任务到队列：run_id={run_id}, type={task_type}, task={task_uuid}"
     )
@@ -151,6 +176,106 @@ def execute_check_tasks(sync_task, refresh, run_id=None):
         status = "succeeded"
     logger_config.logger.info(f"[sync check] task:{sync_task.uuid} {status}")
     return RunOutcome(status=status, result=result)
+
+
+def check_alist2strm(
+    task,
+    trigger_type="scheduled",
+    request_id=None,
+    changed_paths=None,
+    source_run_id=None,
+):
+    return _enqueue(
+        task_uuid=task.uuid,
+        task_type="alist2strm",
+        trigger_type=trigger_type,
+        parameters={
+            **task.parameters(),
+            "output_root": config.strm_output_root,
+            "incremental": changed_paths is not None,
+            "incremental_path_count": len(changed_paths or ()),
+            "source_run_id": source_run_id,
+        },
+        func=execute_alist2strm,
+        args=[
+            task,
+            config.alist_url,
+            config.authorization,
+            config.alist_request_timeout_seconds,
+            config.strm_output_root,
+            tuple(changed_paths) if changed_paths is not None else None,
+        ],
+        request_id=request_id,
+        work_queue=strm_task_queue,
+    )
+
+
+def execute_alist2strm(
+    task,
+    alist_url,
+    api_key,
+    request_timeout,
+    output_root,
+    changed_paths,
+    run_id=None,
+):
+    result = run_alist2strm(
+        task=task,
+        alist_url=alist_url,
+        api_key=api_key,
+        request_timeout=request_timeout,
+        output_root=output_root,
+        changed_paths=changed_paths,
+    )
+    return RunOutcome(
+        status="failed" if result.get("failed") else "succeeded",
+        result=result,
+    )
+
+
+def _enqueue_internal_alist2strm(detail, source_run_id):
+    triggers = detail.get("alist2strm_triggers") or []
+    if not triggers:
+        return
+
+    tasks_by_uuid = {task.uuid: task for task in config.alist2strm_tasks}
+    runs = []
+    errors = []
+    for trigger in triggers:
+        task_uuid = trigger.get("task_uuid")
+        task = tasks_by_uuid.get(task_uuid)
+        if task is None:
+            errors.append({"task_uuid": task_uuid, "error": "task_not_found"})
+            continue
+        try:
+            paths = trigger.get("paths") or []
+            strm_run_id = check_alist2strm(
+                task,
+                trigger_type="postprocess",
+                changed_paths=paths,
+                source_run_id=source_run_id,
+            )
+            strm_run = runtime_store.get_run(strm_run_id, child_limit=1) or {}
+            runs.append(
+                {
+                    "task_uuid": task_uuid,
+                    "run_id": strm_run_id,
+                    "status": strm_run.get("status"),
+                    "path_count": len(paths),
+                }
+            )
+        except Exception as error:
+            logger_config.logger.exception(
+                "[cache check] failed to enqueue internal Alist2Strm task=%s: %s",
+                task_uuid,
+                error,
+            )
+            errors.append({"task_uuid": task_uuid, "error": str(error)})
+
+    detail["alist2strm_runs"] = runs
+    if errors:
+        detail["alist2strm_enqueue_errors"] = errors
+        detail["success"] = False
 
 
 def check_cache_refresh(trigger_type="scheduled", request_id=None):
@@ -221,6 +346,8 @@ def execute_check_cache_refresh(run_id=None):
                     parent["tasks"],
                     run_id=parent_run_id,
                 )
+                if detail.get("success"):
+                    _enqueue_internal_alist2strm(detail, parent_run_id)
             else:
                 cleanup = cleanup_tracked_tasks(parent["tasks"])
                 detail = {
@@ -229,6 +356,7 @@ def execute_check_cache_refresh(run_id=None):
                     "callbacks": [],
                     "refreshed_paths": [],
                     "failed_paths": [],
+                    "alist2strm_triggers": [],
                 }
         except Exception as error:
             logger_config.logger.exception(
@@ -302,6 +430,8 @@ def start_checker():
 def validate_scheduler_config(data):
     for task in data.get("tasks", []):
         CronTrigger.from_crontab(task.get("cron", "1 * * * *"))
+    for task in data.get("alist2strm_tasks", []):
+        CronTrigger.from_crontab(task.get("cron", "0 */6 * * *"))
     for task in data.get("dir_tree_build_tasks", []):
         CronTrigger.from_crontab(task["cron"])
 
@@ -316,6 +446,14 @@ def _add_scheduler_jobs():
             name=f"同步任务 {sync_task.uuid}",
         )
 
+    for task in config.alist2strm_tasks:
+        scheduler.add_job(
+            check_alist2strm,
+            args=[task],
+            trigger=CronTrigger.from_crontab(task.cron),
+            id=f"alist2strm:{task.uuid}",
+            name=f"STRM 生成 {task.uuid}",
+        )
     scheduler.add_job(
         check_cache_refresh,
         trigger=CronTrigger(minute="*"),
@@ -412,6 +550,9 @@ def runtime_snapshot():
         "worker_alive": bool(worker_thread and worker_thread.is_alive()),
         "scheduler_running": bool(scheduler and scheduler.running),
         "scheduler_jobs": scheduler_jobs(),
+        "strm_queue_size": strm_task_queue.qsize(),
+        "unfinished_strm_queue_items": strm_task_queue.unfinished_tasks,
+        "strm_worker_alive": bool(strm_worker_thread and strm_worker_thread.is_alive()),
         "alist": alist_health,
         "operational_jobs_paused": not alist_health["online"],
     }

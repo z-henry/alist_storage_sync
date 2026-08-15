@@ -1,5 +1,5 @@
 # 使用官方的Python基础镜像
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 # 设置工作目录
 WORKDIR /app
@@ -18,6 +18,7 @@ EXPOSE 8115
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
+ENV STRM_OUTPUT_ROOT=/media
 
 # 运行Python应用程序
 CMD ["python", "app.py"]

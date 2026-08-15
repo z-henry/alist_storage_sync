@@ -14,6 +14,23 @@
             "mounted_path": ""
         }
     ],
+    "alist2strm_tasks": [
+        {
+            "uuid": "movies-strm",
+            "source_dir": "/115/电影",
+            "target_dir": "movies",
+            "cron": "0 */6 * * *",
+            "flatten_mode": false,
+            "subtitle": true,
+            "image": false,
+            "nfo": true,
+            "mode": "alist_url",
+            "overwrite": false,
+            "other_extensions": [],
+            "max_workers": 20,
+            "max_downloaders": 3
+        }
+    ],
     "alist": {
         "url": "https://0.0.0.0:5244",
         "apikey": "****",
