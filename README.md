@@ -31,6 +31,8 @@ STRM 任务通过 `alist2strm_tasks` 配置并复用 `alist.url` 与 `alist.apik
 
 STRM 扫描使用独立任务队列，不会阻塞存储复制任务的巡检与后处理。同一 STRM 实例尚未完成时，后续定时或手动触发会记录为“忙碌跳过”。生成过程不会删除目标目录中已经存在但源端已不存在的文件。
 
+多个源文件映射到同一个输出时，若目标文件已存在且 `overwrite=false`，所有候选都会直接跳过，不会重新生成；目标不存在或开启覆盖时，默认选择体积最大的源文件。运行详情会汇总同名输出组、处理动作和候选文件，方便后续清理源端重复文件。
+
 同步复制成功并完成缓存刷新后，程序会按目标路径匹配 `alist2strm_tasks[].source_dir`，将文件或目录直接送入内部 STRM 队列增量处理，不再经过 HTTP API。路径匹配到内部 STRM 任务时会跳过旧 webhook，未匹配时 webhook 仍作为兼容兜底。
 
 代码中的 Alist2Strm 设计源自 [AutoFilm](https://github.com/Akimio521/AutoFilm)，迁移时改为 API Key 认证、有界异步队列和原子文件写入。

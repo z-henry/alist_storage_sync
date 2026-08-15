@@ -48,6 +48,21 @@ class Alist2StrmServiceTests(unittest.IsolatedAsyncioTestCase):
                     "sign": "image-sign",
                 },
             ]
+        elif payload["path"] == "/duplicates":
+            content = [
+                {
+                    "name": "movie.mkv",
+                    "size": 100,
+                    "is_dir": False,
+                    "sign": "small-sign",
+                },
+                {
+                    "name": "movie.mp4",
+                    "size": 200,
+                    "is_dir": False,
+                    "sign": "large-sign",
+                },
+            ]
         else:
             content = []
         return web.json_response({"code": 200, "data": {"content": content}})
@@ -133,6 +148,69 @@ class Alist2StrmServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["requested_path_count"], 1)
             self.assertEqual(result["scanned"], 1)
             self.assertEqual(result["strm_created"], 1)
+            self.assertEqual(result["failed"], 0)
+
+    async def test_duplicate_output_selects_largest_source_when_target_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = Alist2StrmTask(
+                uuid="duplicate-strm",
+                source_dir="/duplicates",
+                target_dir="library",
+            )
+            result = await Alist2StrmService(
+                task=task,
+                alist_url=self.alist_url,
+                api_key="test-key",
+                request_timeout=2,
+                output_root=directory,
+            ).run()
+
+            output = Path(directory) / "library/movie.strm"
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                f"{self.alist_url}/d/duplicates/movie.mp4?sign=large-sign",
+            )
+            self.assertEqual(result["duplicate_groups"], 1)
+            self.assertEqual(result["duplicate_selected_groups"], 1)
+            self.assertEqual(result["duplicate_existing_groups"], 0)
+            self.assertEqual(result["duplicate_ignored_count"], 1)
+            self.assertEqual(
+                result["duplicate_details"][0]["selected"]["path"],
+                "/duplicates/movie.mp4",
+            )
+            self.assertEqual(result["strm_created"], 1)
+            self.assertEqual(result["failed"], 0)
+
+    async def test_duplicate_output_skips_every_source_when_target_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "library/movie.strm"
+            output.parent.mkdir(parents=True)
+            output.write_text("existing-content", encoding="utf-8")
+            task = Alist2StrmTask(
+                uuid="existing-duplicate-strm",
+                source_dir="/duplicates",
+                target_dir="library",
+            )
+            result = await Alist2StrmService(
+                task=task,
+                alist_url=self.alist_url,
+                api_key="test-key",
+                request_timeout=2,
+                output_root=directory,
+            ).run()
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "existing-content")
+            self.assertEqual(result["duplicate_groups"], 1)
+            self.assertEqual(result["duplicate_existing_groups"], 1)
+            self.assertEqual(result["duplicate_selected_groups"], 0)
+            self.assertEqual(result["duplicate_ignored_count"], 2)
+            self.assertEqual(result["skipped_existing"], 2)
+            self.assertIsNone(result["duplicate_details"][0]["selected"])
+            self.assertEqual(
+                result["duplicate_details"][0]["action"],
+                "skipped_existing",
+            )
+            self.assertEqual(result["strm_created"], 0)
             self.assertEqual(result["failed"], 0)
 
 

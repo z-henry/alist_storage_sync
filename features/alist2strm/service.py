@@ -41,8 +41,8 @@ class Alist2StrmService:
             maxsize=max(10, task.max_workers * 4)
         )
         self.download_slots = asyncio.Semaphore(task.max_downloaders)
-        self.claimed_paths: set[Path] = set()
         self.queued_remote_paths: set[str] = set()
+        self.output_candidates: dict[Path, list[AlistEntry]] = {}
         self.result = {
             "scanned": 0,
             "strm_created": 0,
@@ -55,6 +55,14 @@ class Alist2StrmService:
             "output_dir": str(self.output_base),
             "incremental": self.changed_paths is not None,
             "requested_path_count": len(self.changed_paths or ()),
+            "duplicate_groups": 0,
+            "duplicate_existing_groups": 0,
+            "duplicate_selected_groups": 0,
+            "duplicate_source_count": 0,
+            "duplicate_ignored_count": 0,
+            "duplicate_ignored_bytes": 0,
+            "duplicate_details": [],
+            "duplicate_details_truncated": 0,
         }
 
         download_extensions = set(task.other_extensions)
@@ -94,6 +102,7 @@ class Alist2StrmService:
                         await self._scan_directory(self.task.source_dir)
                     else:
                         await self._scan_changed_paths()
+                    await self._flush_candidates()
                     for _ in range(self.task.max_workers):
                         await self.queue.put(None)
 
@@ -105,6 +114,16 @@ class Alist2StrmService:
             self.result["skipped_existing"],
             self.result["failed"],
         )
+        if self.result["duplicate_groups"]:
+            logger_config.logger.warning(
+                "[alist2strm] task=%s resolved duplicate outputs: groups=%s "
+                "existing=%s selected_largest=%s ignored_sources=%s",
+                self.task.uuid,
+                self.result["duplicate_groups"],
+                self.result["duplicate_existing_groups"],
+                self.result["duplicate_selected_groups"],
+                self.result["duplicate_ignored_count"],
+            )
         return self.result
 
     async def _scan_directory(self, directory: str) -> None:
@@ -140,7 +159,87 @@ class Alist2StrmService:
         if entry.suffix not in self.process_extensions:
             self.result["unsupported"] += 1
             return
-        await self.queue.put(entry)
+        local_path = map_local_path(
+            self.output_base,
+            self.task.source_dir,
+            entry.path,
+            self.task.flatten_mode,
+        )
+        self.output_candidates.setdefault(local_path, []).append(entry)
+
+    async def _flush_candidates(self) -> None:
+        for local_path, entries in sorted(
+            self.output_candidates.items(),
+            key=lambda item: str(item[0]),
+        ):
+            if len(entries) == 1:
+                await self.queue.put(entries[0])
+                continue
+
+            ranked = sorted(entries, key=lambda entry: (-entry.size, entry.path))
+            self.result["duplicate_groups"] += 1
+            self.result["duplicate_source_count"] += len(ranked)
+
+            if not self.task.overwrite and await asyncio.to_thread(local_path.exists):
+                self.result["duplicate_existing_groups"] += 1
+                self.result["duplicate_ignored_count"] += len(ranked)
+                self.result["duplicate_ignored_bytes"] += sum(
+                    entry.size for entry in ranked
+                )
+                self.result["skipped_existing"] += len(ranked)
+                self._record_duplicate_detail(
+                    local_path,
+                    action="skipped_existing",
+                    selected=None,
+                    candidates=ranked,
+                )
+                continue
+
+            selected = ranked[0]
+            ignored = ranked[1:]
+            self.result["duplicate_selected_groups"] += 1
+            self.result["duplicate_ignored_count"] += len(ignored)
+            self.result["duplicate_ignored_bytes"] += sum(
+                entry.size for entry in ignored
+            )
+            self._record_duplicate_detail(
+                local_path,
+                action=(
+                    "overwritten_with_largest"
+                    if self.task.overwrite
+                    else "selected_largest"
+                ),
+                selected=selected,
+                candidates=ranked,
+            )
+            await self.queue.put(selected)
+
+    def _record_duplicate_detail(
+        self,
+        local_path: Path,
+        action: str,
+        selected: AlistEntry | None,
+        candidates: list[AlistEntry],
+    ) -> None:
+        if len(self.result["duplicate_details"]) >= 100:
+            self.result["duplicate_details_truncated"] += 1
+            return
+        self.result["duplicate_details"].append(
+            {
+                "output_path": str(local_path),
+                "action": action,
+                "selected": self._entry_summary(selected) if selected else None,
+                "candidates": [self._entry_summary(entry) for entry in candidates],
+            }
+        )
+
+    @staticmethod
+    def _entry_summary(entry: AlistEntry) -> dict:
+        return {
+            "path": entry.path,
+            "size": entry.size,
+            "extension": entry.suffix,
+        }
 
     async def _worker(self, worker_number: int) -> None:
         while True:
@@ -171,10 +270,6 @@ class Alist2StrmService:
             entry.path,
             self.task.flatten_mode,
         )
-        if local_path in self.claimed_paths:
-            raise RuntimeError(f"Multiple source files map to the same output: {local_path}")
-        self.claimed_paths.add(local_path)
-
         if not self.task.overwrite and await asyncio.to_thread(local_path.exists):
             self.result["skipped_existing"] += 1
             return

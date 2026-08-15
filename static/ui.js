@@ -120,9 +120,132 @@ function statusNode(status) {
   return el("span", `status ${status || ""}`, label(status));
 }
 
+function getStrmResult(data) {
+  if (!data || data.task_type !== "alist2strm") return null;
+  return data.result || {};
+}
+
+function legacyDuplicateErrors(result) {
+  return (result.errors || []).filter((item) =>
+    String(item?.error || "").includes("Multiple source files map to the same output"));
+}
+
+function duplicateGroupCount(result) {
+  if (result.duplicate_groups !== undefined) return Number(result.duplicate_groups) || 0;
+  return legacyDuplicateErrors(result).length;
+}
+
+function strmResultSummaryText(result) {
+  const duplicateGroups = duplicateGroupCount(result);
+  const duplicateCopy = duplicateGroups
+    ? result.duplicate_groups === undefined
+      ? ` · 旧版同名输出错误 ${duplicateGroups} 条`
+      : ` · 同名输出 ${duplicateGroups} 组（已有跳过 ${result.duplicate_existing_groups || 0}，选择最大文件 ${result.duplicate_selected_groups || 0}）`
+    : " · 无同名输出冲突";
+  return `扫描 ${result.scanned || 0} · 创建 ${result.strm_created || 0} · 已有跳过 ${result.skipped_existing || 0}${duplicateCopy} · 失败 ${result.failed || 0}`;
+}
+
+function duplicateActionLabel(action) {
+  if (action === "skipped_existing") return "目标已存在 · 全部跳过";
+  if (action === "overwritten_with_largest") return "覆盖模式 · 已选择最大文件";
+  return "目标不存在 · 已选择最大文件";
+}
+
+function createStrmResultSummary(result, detailLimit = 100) {
+  const section = el("section", "strm-result-summary");
+  const heading = el("div", "strm-result-heading");
+  heading.append(
+    el("strong", "", "STRM 处理摘要"),
+    el("span", "", result.incremental ? "增量处理" : "完整扫描"),
+  );
+  section.append(heading);
+
+  const metrics = el("div", "strm-result-metrics");
+  [
+    ["扫描文件", result.scanned || 0],
+    ["创建 STRM", result.strm_created || 0],
+    ["已有跳过", result.skipped_existing || 0],
+    ["同名输出", duplicateGroupCount(result)],
+    ["忽略源文件", result.duplicate_ignored_count || 0],
+    ["处理失败", result.failed || 0],
+  ].forEach(([title, value]) => {
+    const metric = el("div", "strm-result-metric");
+    metric.append(el("span", "", title), el("strong", "", value));
+    metrics.append(metric);
+  });
+  section.append(metrics);
+
+  const duplicateGroups = duplicateGroupCount(result);
+  if (!duplicateGroups) {
+    section.append(el("p", "strm-result-note", "本次运行没有发现多个源文件映射到同一个输出。"));
+    return section;
+  }
+
+  if (result.duplicate_groups === undefined) {
+    section.append(
+      el(
+        "p",
+        "strm-result-note",
+        `这是旧版运行记录，共有 ${duplicateGroups} 条同名输出错误；旧记录没有保存候选大小和自动选择结果。部署新版后的运行会按新规则处理并展示完整明细。`,
+      ),
+    );
+    return section;
+  }
+
+  section.append(
+    el(
+      "p",
+      "strm-result-note",
+      `已有目标 ${result.duplicate_existing_groups || 0} 组全部跳过；${result.duplicate_selected_groups || 0} 组按文件体积选择最大源文件。`,
+    ),
+  );
+  const list = el("div", "strm-duplicate-list");
+  const details = result.duplicate_details || [];
+  details.slice(0, detailLimit).forEach((detail) => {
+    const card = el("article", "strm-duplicate-card");
+    const cardHeading = el("div", "strm-duplicate-heading");
+    cardHeading.append(
+      el("code", "", detail.output_path),
+      el("span", `strm-duplicate-action ${detail.action || ""}`, duplicateActionLabel(detail.action)),
+    );
+    card.append(cardHeading);
+    const selectedPath = detail.selected?.path;
+    const candidates = el("div", "strm-candidates");
+    (detail.candidates || []).forEach((candidate) => {
+      const selected = selectedPath === candidate.path;
+      const row = el("div", `strm-candidate${selected ? " selected" : ""}`);
+      const state = detail.action === "skipped_existing"
+        ? "已跳过"
+        : (selected ? "已选择" : "已忽略");
+      row.append(
+        el("span", "strm-candidate-state", state),
+        el("code", "", candidate.path),
+        el("span", "strm-candidate-size", formatBytes(candidate.size)),
+      );
+      candidates.append(row);
+    });
+    card.append(candidates);
+    list.append(card);
+  });
+  section.append(list);
+
+  const hidden = Math.max(0, details.length - detailLimit) + (result.duplicate_details_truncated || 0);
+  if (hidden) {
+    section.append(el("p", "strm-result-note", `还有 ${hidden} 组明细未在此处展开，请查看完整运行详情。`));
+  }
+  return section;
+}
+
 function showDetail(title, data) {
   document.getElementById("detail-title").textContent = title;
-  document.getElementById("detail-content").textContent = JSON.stringify(data, null, 2);
+  const content = document.getElementById("detail-content");
+  content.replaceChildren();
+  const strmResult = getStrmResult(data);
+  if (strmResult) content.append(createStrmResultSummary(strmResult));
+  const raw = el(strmResult ? "details" : "div", strmResult ? "detail-json" : "");
+  if (strmResult) raw.append(el("summary", "", "查看完整原始记录"));
+  raw.append(el("pre", "", JSON.stringify(data, null, 2)));
+  content.append(raw);
   document.getElementById("detail-dialog").showModal();
 }
 
@@ -229,12 +352,19 @@ function childPanelTargets(runId) {
 function renderRunChildren(panel, detail) {
   panel.replaceChildren();
   const summary = detail.alist_task_summary;
+  const strmResult = getStrmResult(detail);
   const toolbar = el("div", "child-toolbar");
-  const copy = summary
+  const copy = strmResult
+    ? strmResultSummaryText(strmResult)
+    : summary
     ? `成功 ${summary.succeeded} · 失败 ${summary.failed} · 等待 ${summary.pending} · 共 ${summary.total}`
     : "该父任务没有 AList 文件子任务";
   toolbar.append(el("span", "child-summary", copy));
-  const detailButton = el("button", "text-button", "查看父任务参数与结果");
+  const detailButton = el(
+    "button",
+    "text-button",
+    strmResult ? "查看完整运行详情" : "查看父任务参数与结果",
+  );
   detailButton.type = "button";
   detailButton.addEventListener("click", () => {
     const { alist_tasks: _alistTasks, ...parentDetail } = detail;
@@ -242,6 +372,11 @@ function renderRunChildren(panel, detail) {
   });
   toolbar.append(detailButton);
   panel.append(toolbar);
+
+  if (strmResult) {
+    panel.append(createStrmResultSummary(strmResult, 5));
+    return;
+  }
 
   const tasks = detail.alist_tasks || [];
   if (!tasks.length) {
