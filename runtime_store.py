@@ -15,6 +15,22 @@ _SENSITIVE_KEYS = ("password", "passwd", "secret", "token", "apikey", "api_key",
 ACTIVE_INSTANCE_STATUSES = ("queued", "running", "waiting_alist")
 
 
+TERMINAL_RUN_STATUSES = (
+    "submitted",
+    "succeeded",
+    "failed",
+    "skipped_busy",
+    "skipped_unavailable",
+    "interrupted",
+)
+OVERVIEW_RAW_KIND = "raw"
+OVERVIEW_EMPTY_SUCCESS_KIND = "empty_succeeded"
+OVERVIEW_BUSY_SKIP_KIND = "skipped_busy"
+OVERVIEW_COMPACT_KINDS = (
+    OVERVIEW_EMPTY_SUCCESS_KIND,
+    OVERVIEW_BUSY_SKIP_KIND,
+)
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -58,6 +74,15 @@ def _json_dump(value):
     return json.dumps(sanitize_payload(value), ensure_ascii=False, separators=(",", ":"))
 
 
+def _json_load(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
 def _connect():
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
@@ -72,6 +97,59 @@ def _ensure_column(connection, table, column, definition):
     }
     if column not in columns:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _is_zero(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
+
+
+def _overview_kind(task_type, trigger_type, status, result):
+    if trigger_type != "scheduled":
+        return OVERVIEW_RAW_KIND
+    if status == "skipped_busy":
+        return OVERVIEW_BUSY_SKIP_KIND
+    if status != "succeeded" or not isinstance(result, dict):
+        return OVERVIEW_RAW_KIND
+    if task_type == "sync":
+        required = ("source_found", "scanned_entries", "directories_created", "copy_requests_submitted", "source_files_deleted", "failures")
+        if all(key in result for key in required) and result["source_found"] is not False and all(_is_zero(result[key]) for key in ("directories_created", "copy_requests_submitted", "source_files_deleted", "failures")):
+            return OVERVIEW_EMPTY_SUCCESS_KIND
+    elif task_type == "alist2strm":
+        required = ("scanned", "strm_created", "assets_downloaded", "failed")
+        if all(key in result for key in required) and all(_is_zero(result[key]) for key in ("strm_created", "assets_downloaded", "failed")):
+            return OVERVIEW_EMPTY_SUCCESS_KIND
+    elif task_type == "cache_refresh":
+        required = ("tracked_done", "tracked_undone", "missing_timed_out", "finalized_runs", "postprocessed_runs")
+        if all(key in result for key in required) and all(_is_zero(result[key]) for key in ("tracked_done", "tracked_undone", "missing_timed_out")) and not result["finalized_runs"] and not result["postprocessed_runs"]:
+            return OVERVIEW_EMPTY_SUCCESS_KIND
+    return OVERVIEW_RAW_KIND
+
+
+def _classify_overview_run(connection, run_id):
+    row = connection.execute("SELECT rowid AS store_rowid, * FROM task_runs WHERE run_id = ?", (run_id,)).fetchone()
+    if not row or row["overview_kind"] is not None or row["status"] not in TERMINAL_RUN_STATUSES:
+        return
+    kind = _overview_kind(row["task_type"], row["trigger_type"], row["status"], _json_load(row["result_json"]))
+    connection.execute("UPDATE task_runs SET overview_kind = ? WHERE run_id = ?", (kind, run_id))
+    if kind not in OVERVIEW_COMPACT_KINDS:
+        return
+    previous = connection.execute("""SELECT overview_kind, overview_group_id FROM task_runs WHERE task_type = ? AND task_uuid = ? AND rowid < ? ORDER BY rowid DESC LIMIT 1""", (row["task_type"], row["task_uuid"], row["store_rowid"])).fetchone()
+    now = utc_now()
+    ended_at = row["finished_at"] or row["created_at"]
+    if previous and previous["overview_kind"] == kind and previous["overview_group_id"]:
+        group_id = previous["overview_group_id"]
+        connection.execute("""UPDATE overview_run_groups SET last_run_id = ?, run_count = run_count + 1, ended_at = ?, last_created_at = ?, updated_at = ? WHERE group_id = ?""", (run_id, ended_at, row["created_at"], now, group_id))
+    else:
+        group_id = str(uuid.uuid4())
+        connection.execute("""INSERT INTO overview_run_groups (group_id, task_type, task_uuid, overview_kind, trigger_type, first_run_id, last_run_id, run_count, started_at, ended_at, last_created_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)""", (group_id, row["task_type"], row["task_uuid"], kind, row["trigger_type"], run_id, run_id, row["created_at"], ended_at, row["created_at"], now, now))
+    connection.execute("UPDATE task_runs SET overview_group_id = ? WHERE run_id = ?", (group_id, run_id))
+
+
+def _backfill_overview_groups(connection):
+    placeholders = ",".join("?" for _ in TERMINAL_RUN_STATUSES)
+    rows = connection.execute(f"SELECT run_id FROM task_runs WHERE overview_kind IS NULL AND status IN ({placeholders}) ORDER BY task_type, task_uuid, rowid", TERMINAL_RUN_STATUSES).fetchall()
+    for row in rows:
+        _classify_overview_run(connection, row["run_id"])
 
 
 def init_db():
@@ -125,6 +203,27 @@ def init_db():
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS overview_run_groups (
+                    group_id TEXT PRIMARY KEY,
+                    task_type TEXT NOT NULL,
+                    task_uuid TEXT NOT NULL,
+                    overview_kind TEXT NOT NULL,
+                    trigger_type TEXT NOT NULL,
+                    first_run_id TEXT NOT NULL,
+                    last_run_id TEXT NOT NULL,
+                    run_count INTEGER NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    last_created_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (first_run_id) REFERENCES task_runs(run_id),
+                    FOREIGN KEY (last_run_id) REFERENCES task_runs(run_id)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS callback_attempts (
                     callback_id TEXT PRIMARY KEY,
                     run_id TEXT,
@@ -168,6 +267,8 @@ def init_db():
             _ensure_column(connection, "task_runs", "postprocess_status", "TEXT")
             _ensure_column(connection, "task_runs", "postprocess_started_at", "TEXT")
             _ensure_column(connection, "task_runs", "postprocess_finished_at", "TEXT")
+            _ensure_column(connection, "task_runs", "overview_kind", "TEXT")
+            _ensure_column(connection, "task_runs", "overview_group_id", "TEXT")
             _ensure_column(connection, "alist_copy_tasks", "last_seen_at", "TEXT")
             _ensure_column(connection, "alist_copy_tasks", "completed_at", "TEXT")
             connection.execute(
@@ -209,6 +310,18 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_task_runs_postprocess_status "
                 "ON task_runs(postprocess_status)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_runs_overview_lookup "
+                "ON task_runs(task_type, task_uuid, created_at DESC, run_id DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_runs_overview_group "
+                "ON task_runs(overview_group_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_overview_run_groups_lookup "
+                "ON overview_run_groups(task_type, task_uuid, last_created_at DESC)"
+            )
             connection.execute("PRAGMA optimize")
             connection.execute(
                 """
@@ -228,6 +341,7 @@ def init_db():
                 WHERE postprocess_status = 'running'
                 """
             )
+            _backfill_overview_groups(connection)
         _INITIALIZED = True
 
 
@@ -341,6 +455,7 @@ def create_run_if_instance_idle(
                     now,
                 ),
             )
+            _classify_overview_run(connection, run_id)
             return run_id, active
 
         connection.execute(
@@ -395,6 +510,8 @@ def update_run(run_id, status, result=None, error=None):
             f"UPDATE task_runs SET {', '.join(fields)} WHERE run_id = ?",
             values,
         )
+        if status in TERMINAL_RUN_STATUSES:
+            _classify_overview_run(connection, run_id)
 
 
 def record_alist_copy_tasks(run_id, tasks, source_dir, destination_dir, entry_name):
@@ -532,6 +649,8 @@ def finalize_waiting_alist_runs(run_id=None):
                 f"UPDATE task_runs SET {', '.join(fields)} WHERE run_id = ?",
                 update_values,
             )
+            if summary["pending"] == 0:
+                _classify_overview_run(connection, run["run_id"])
     return finalized
 
 
@@ -853,6 +972,45 @@ def list_runs(
         if run["run_id"] in summaries:
             run["alist_task_summary"] = summaries[run["run_id"]]
     return runs
+
+
+def list_overview_entries(limit=10, task_type=None, task_uuid=None):
+    """Return raw runs and compact overview groups for one task instance."""
+    init_db()
+    limit = max(1, min(int(limit), 100))
+    clauses = []
+    values = []
+    if task_type:
+        clauses.append("task_type = ?")
+        values.append(task_type)
+    if task_uuid:
+        clauses.append("task_uuid = ?")
+        values.append(task_uuid)
+    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    raw_clause = f"{where_clause}{' AND' if where_clause else 'WHERE'} overview_group_id IS NULL"
+    with _connect() as connection:
+        raw_rows = connection.execute(
+            f"SELECT * FROM task_runs {raw_clause} ORDER BY created_at DESC, run_id DESC LIMIT ?",
+            (*values, limit),
+        ).fetchall()
+        group_rows = connection.execute(
+            f"SELECT * FROM overview_run_groups {where_clause} ORDER BY last_created_at DESC, group_id DESC LIMIT ?",
+            (*values, limit),
+        ).fetchall()
+    entries = []
+    for row in raw_rows:
+        run = _parse_json_columns(row)
+        run["overview_entry_type"] = "run"
+        run["sort_at"] = run["created_at"]
+        entries.append(run)
+    for row in group_rows:
+        group = dict(row)
+        group["overview_entry_type"] = "group"
+        group["sort_at"] = group["last_created_at"]
+        group["status"] = "succeeded" if group["overview_kind"] == OVERVIEW_EMPTY_SUCCESS_KIND else "skipped_busy"
+        entries.append(group)
+    entries.sort(key=lambda entry: (entry["sort_at"], entry.get("run_id", entry.get("group_id", ""))), reverse=True)
+    return entries[:limit]
 
 
 def get_run(run_id, child_limit=500, child_offset=0):

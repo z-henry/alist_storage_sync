@@ -118,6 +118,9 @@ class Alist2StrmServiceTests(unittest.IsolatedAsyncioTestCase):
                 f"{self.alist_url}/d/source/movie.mkv?sign=video-sign",
             )
             self.assertEqual((output / "poster.jpg").read_bytes(), b"image")
+            self.assertEqual((output / "movie.strm").stat().st_mode & 0o777, 0o777)
+            self.assertEqual((output / "poster.jpg").stat().st_mode & 0o777, 0o777)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o777)
             self.assertEqual(result["strm_created"], 1)
             self.assertEqual(result["assets_downloaded"], 1)
             self.assertEqual(result["failed"], 0)

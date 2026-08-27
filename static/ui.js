@@ -483,6 +483,17 @@ async function loadRunDetail(runId, loadMore = false) {
   return request;
 }
 
+function overviewGroupStatus(entry) {
+  const title = entry.overview_kind === "empty_succeeded"
+    ? `空任务 × ${entry.run_count}`
+    : `忙碌跳过 × ${entry.run_count}`;
+  return el("span", `status ${entry.status}`, title);
+}
+
+function overviewTimeRange(entry) {
+  return `${formatDate(entry.started_at)} — ${formatDate(entry.ended_at)}`;
+}
+
 function renderRunsTable(target, runs) {
   const table = typeof target === "string" ? document.getElementById(target) : target;
   table.replaceChildren();
@@ -503,6 +514,27 @@ function renderRunsTable(target, runs) {
   }
 
   runs.forEach((run) => {
+    if (run.overview_entry_type === "group") {
+      const row = el("tr", "overview-group-row");
+      const name = el("td");
+      name.append(
+        el("span", "primary-cell", run.task_uuid),
+        el("span", "secondary", `${label(run.task_type)} · 定时触发 · 已合并 ${run.run_count} 次`),
+      );
+      const state = el("td");
+      state.append(overviewGroupStatus(run));
+      row.append(
+        el("td", "toggle-cell", "—"),
+        name,
+        state,
+        el("td", "", "—"),
+        el("td", "", overviewTimeRange(run)),
+        el("td", "", `覆盖 ${duration({ started_at: run.started_at, finished_at: run.ended_at })}`),
+        el("td", "run-id", "合并摘要"),
+      );
+      tbody.append(row);
+      return;
+    }
     const expanded = expandedRunIds.has(run.run_id);
     const row = el("tr", "run-parent-row");
     row.tabIndex = 0;
@@ -599,17 +631,21 @@ function renderOverviewRunGroups(runs) {
       instanceLabel(group.taskType, group.taskUuid),
     );
     const latestCreatedAt = groupRuns.reduce(
-      (latest, run) => (!latest || run.created_at > latest ? run.created_at : latest),
+      (latest, run) => {
+        const createdAt = run.last_created_at || run.created_at;
+        return !latest || createdAt > latest ? createdAt : latest;
+      },
       "",
     );
+    const representedRuns = groupRuns.reduce((total, run) => total + (run.run_count || 1), 0);
     const failed = groupRuns.filter((run) => run.status === "failed").length;
-  const waiting = groupRuns.filter((run) => ["queued", "running", "waiting_alist"].includes(run.status)).length;
+    const waiting = groupRuns.filter((run) => ["queued", "running", "waiting_alist"].includes(run.status)).length;
     summary.append(
       title,
       el(
         "span",
         "run-group-meta",
-        `${groupRuns.length} 个父任务 · 最近执行 ${formatDate(latestCreatedAt)} · 等待 ${waiting} · 失败 ${failed}`,
+        `${groupRuns.length} 个展示项 · 覆盖 ${representedRuns} 次运行 · 最近执行 ${formatDate(latestCreatedAt)} · 等待 ${waiting} · 失败 ${failed}`,
       ),
     );
     details.append(summary);
@@ -695,7 +731,7 @@ function renderOverview(data) {
     card.append(el("span", "", title), el("strong", "", value), el("small", "", hint));
     container.append(card);
   });
-  renderOverviewRunGroups(data.recent_runs || []);
+  renderOverviewRunGroups(data.recent_activity || []);
 }
 
 function cloneConfig(value) {
@@ -1253,7 +1289,7 @@ async function refreshAll() {
       getJson("/ui/api/requests?limit=100"),
       getJson("/ui/api/callbacks?limit=100"),
     ]);
-    populateRunInstanceFilter(tasks.tasks, overview.recent_runs);
+    populateRunInstanceFilter(tasks.tasks, overview.recent_activity);
     renderOverview(overview);
     renderTasks(tasks);
     renderRunsTable("runs-table", runs.runs || []);

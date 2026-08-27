@@ -182,42 +182,36 @@ def logout():
 def overview():
     runtime = task_manager.runtime_snapshot()
     counts = runtime_store.overview_counts()
-    recent_runs = []
+    recent_activity = []
     instance_keys = [("sync", task.uuid) for task in config.sync_tasks]
     instance_keys.append(("cache_refresh", "cache-refresh"))
-    instance_keys.extend(
-        ("dir_tree_build", task.uuid) for task in config.dir_tree_build_tasks
-    )
-    instance_keys.extend(
-        ("alist2strm", task.uuid) for task in config.alist2strm_tasks
-    )
+    instance_keys.extend(("dir_tree_build", task.uuid) for task in config.dir_tree_build_tasks)
+    instance_keys.extend(("alist2strm", task.uuid) for task in config.alist2strm_tasks)
     instance_keys = list(dict.fromkeys(instance_keys))
     known_instances = set(instance_keys)
+
+    # Also include recently seen ad-hoc/API instances that are absent from config.
+    for run in runtime_store.list_runs(limit=100):
+        key = (run["task_type"], run["task_uuid"])
+        if key not in known_instances:
+            known_instances.add(key)
+            instance_keys.append(key)
+
     for task_type, task_uuid in instance_keys:
-        recent_runs.extend(
-            runtime_store.list_runs(
+        recent_activity.extend(
+            runtime_store.list_overview_entries(
                 limit=10,
                 task_type=task_type,
                 task_uuid=task_uuid,
             )
         )
-
-    # Include ad-hoc/API instances such as manual-sync even when they are not
-    # declared in config.json.
-    extra_counts = {}
-    for run in runtime_store.list_runs(limit=100):
-        key = (run["task_type"], run["task_uuid"])
-        if key in known_instances or extra_counts.get(key, 0) >= 10:
-            continue
-        recent_runs.append(run)
-        extra_counts[key] = extra_counts.get(key, 0) + 1
-    recent_runs.sort(key=lambda run: run["created_at"], reverse=True)
+    recent_activity.sort(key=lambda entry: entry["sort_at"], reverse=True)
     return jsonify(
         {
             "version": APP_VERSION,
             "runtime": runtime,
             "counts": counts,
-            "recent_runs": recent_runs,
+            "recent_activity": recent_activity,
         }
     )
 

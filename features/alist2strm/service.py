@@ -276,7 +276,7 @@ class Alist2StrmService:
 
         if entry.suffix in VIDEO_EXTENSIONS:
             content = await self._strm_content(entry)
-            await asyncio.to_thread(self._atomic_write_text, local_path, content)
+            await asyncio.to_thread(self._write_strm_file, local_path, content)
             self.result["strm_created"] += 1
             return
 
@@ -297,7 +297,7 @@ class Alist2StrmService:
         raise RuntimeError(f"Unsupported Alist2Strm mode: {self.task.mode}")
 
     async def _download(self, url: str, target: Path) -> None:
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(self._ensure_output_directory, target.parent)
         temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
             async with self.download_session.get(url) as response:
@@ -308,13 +308,13 @@ class Alist2StrmService:
                     output.flush()
                     os.fsync(output.fileno())
             os.replace(temporary, target)
+            os.chmod(target, 0o777)
         finally:
             if temporary.exists():
                 temporary.unlink()
 
-    @staticmethod
-    def _atomic_write_text(target: Path, content: str) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
+    def _write_strm_file(self, target: Path, content: str) -> None:
+        self._ensure_output_directory(target.parent)
         temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
             with temporary.open("w", encoding="utf-8") as output:
@@ -322,9 +322,20 @@ class Alist2StrmService:
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, target)
+            os.chmod(target, 0o777)
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+    def _ensure_output_directory(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+
+        current = directory
+        while True:
+            os.chmod(current, 0o777)
+            if current == self.output_base:
+                return
+            current = current.parent
 
 
 def run_alist2strm(

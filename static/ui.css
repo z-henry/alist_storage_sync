@@ -335,3 +335,4 @@ pre { margin: 0; padding: 22px; overflow: auto; color: #c9d6d0; font: 12px/1.65 
   .config-field-wide { grid-column: auto; }
   .config-meta { display: grid; }
 }
+.overview-group-row, .overview-group-row:hover { cursor: default; background: #10161e; }
