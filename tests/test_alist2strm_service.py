@@ -225,7 +225,15 @@ class Alist2StrmServiceTests(unittest.IsolatedAsyncioTestCase):
             stale_nfo = output / "stale.nfo"
             stale_subtitle = output / "stale.zh.srt"
             stale_image = output / "stale.jpg"
-            for path in (valid, stale, stale_nfo, stale_subtitle, stale_image):
+            stale_mediainfo = output / "stale-mediainfo.json"
+            for path in (
+                valid,
+                stale,
+                stale_nfo,
+                stale_subtitle,
+                stale_image,
+                stale_mediainfo,
+            ):
                 path.write_text("placeholder", encoding="utf-8")
 
             task = Alist2StrmTask(
@@ -247,9 +255,10 @@ class Alist2StrmServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(stale_nfo.exists())
             self.assertFalse(stale_subtitle.exists())
             self.assertFalse(stale_image.exists())
+            self.assertFalse(stale_mediainfo.exists())
             self.assertEqual(result["invalid_strm_found"], 1)
             self.assertEqual(result["invalid_strm_deleted"], 1)
-            self.assertEqual(result["invalid_sidecars_deleted"], 3)
+            self.assertEqual(result["invalid_sidecars_deleted"], 4)
 
             comparison = await Alist2StrmService(
                 task=task,

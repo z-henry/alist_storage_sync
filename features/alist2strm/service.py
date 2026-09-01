@@ -426,6 +426,7 @@ class Alist2StrmService:
             | IMAGE_EXTENSIONS
             | NFO_EXTENSIONS
             | self.download_extensions
+            | frozenset({".json"})
         )
         valid_stems = {
             path.stem for path in valid_paths if path.parent == strm_path.parent
@@ -434,11 +435,14 @@ class Alist2StrmService:
         for path in strm_path.parent.iterdir():
             if not path.is_file() or path.suffix.lower() not in sidecar_extensions:
                 continue
-            if path.stem != stem and not path.stem.startswith(f"{stem}."):
+            if not (
+                path.stem == stem
+                or path.stem.startswith((f"{stem}.", f"{stem}-"))
+            ):
                 continue
             # A longer, valid STRM name owns its own language sidecar.
             if any(
-                path.stem == valid_stem or path.stem.startswith(f"{valid_stem}.")
+                path.stem == valid_stem or path.stem.startswith((f"{valid_stem}.", f"{valid_stem}-"))
                 for valid_stem in valid_stems
             ):
                 continue
