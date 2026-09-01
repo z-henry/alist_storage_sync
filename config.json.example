@@ -27,6 +27,7 @@
             "mode": "alist_url",
             "overwrite": false,
             "other_extensions": [],
+            "cleanup_invalid_strm": false,
             "max_workers": 20,
             "max_downloaders": 3
         }

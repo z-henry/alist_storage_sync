@@ -156,7 +156,10 @@ def validate_config(value):
                 f"{path}.mode must be one of alist_url, raw_url, alist_path"
             )
         task["mode"] = mode
-        for key in ("flatten_mode", "subtitle", "image", "nfo", "overwrite"):
+        for key in (
+            "flatten_mode", "subtitle", "image", "nfo", "overwrite",
+            "cleanup_invalid_strm",
+        ):
             task.setdefault(key, False)
             _boolean(task[key], f"{path}.{key}")
         extensions = _require_list(
@@ -257,6 +260,7 @@ def _apply_config(data):
             nfo=task.get("nfo", False),
             mode=task.get("mode", "alist_url"),
             overwrite=task.get("overwrite", False),
+            cleanup_invalid_strm=task.get("cleanup_invalid_strm", False),
             other_extensions=tuple(task.get("other_extensions", [])),
             max_workers=task.get("max_workers", 20),
             max_downloaders=task.get("max_downloaders", 3),

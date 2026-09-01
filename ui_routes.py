@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import os
@@ -17,6 +18,7 @@ from flask import (
 import api_alist
 import config
 import runtime_store
+from features.alist2strm.service import Alist2StrmService
 import task_manager
 from version import APP_VERSION
 
@@ -330,6 +332,101 @@ def run_alist2strm_task(task_uuid):
         ),
         202,
     )
+
+@ui_blueprint.route(
+    "/ui/api/tasks/alist2strm/<task_uuid>/invalid-strms",
+)
+def compare_invalid_strms(task_uuid):
+    task = next(
+        (item for item in config.alist2strm_tasks if item.uuid == task_uuid),
+        None,
+    )
+    if task is None:
+        return jsonify({"message": f"Alist2Strm task not found: {task_uuid}"}), 404
+    if not api_alist.is_online():
+        return (
+            jsonify(
+                {
+                    "message": "AList is unavailable; comparison is paused",
+                    "alist": api_alist.health_snapshot(),
+                }
+            ),
+            503,
+        )
+
+    try:
+        comparison = asyncio.run(
+            Alist2StrmService(
+                task,
+                config.alist_url,
+                config.authorization,
+                config.alist_request_timeout_seconds,
+                config.strm_output_root,
+            ).compare_invalid_strms()
+        )
+    except Exception as error:
+        current_app.logger.exception("Failed to compare invalid STRM files")
+        return jsonify({"message": f"Failed to compare STRM files: {error}"}), 502
+
+    offset = _offset()
+    records = comparison.pop("invalid_strms")
+    comparison["invalid_strms"] = records[offset : offset + _limit()]
+    comparison["page"] = {
+        "offset": offset,
+        "limit": _limit(),
+        "total": len(records),
+        "truncated": offset + _limit() < len(records),
+    }
+    return jsonify(comparison)
+
+
+@ui_blueprint.route(
+    "/ui/api/tasks/alist2strm/<task_uuid>/invalid-strms/delete",
+    methods=["POST"],
+)
+def delete_invalid_strms(task_uuid):
+    task = next(
+        (item for item in config.alist2strm_tasks if item.uuid == task_uuid),
+        None,
+    )
+    if task is None:
+        return jsonify({"message": f"Alist2Strm task not found: {task_uuid}"}), 404
+    payload = request.get_json(silent=True) or {}
+    paths = payload.get("strm_paths")
+    if (
+        not isinstance(paths, list)
+        or not paths
+        or len(paths) > 500
+        or any(not isinstance(path, str) for path in paths)
+    ):
+        return jsonify({"message": "strm_paths must be a list of 1 to 500 paths"}), 400
+    if not api_alist.is_online():
+        return (
+            jsonify(
+                {
+                    "message": "AList is unavailable; deletion is paused",
+                    "alist": api_alist.health_snapshot(),
+                }
+            ),
+            503,
+        )
+
+    try:
+        result = asyncio.run(
+            Alist2StrmService(
+                task,
+                config.alist_url,
+                config.authorization,
+                config.alist_request_timeout_seconds,
+                config.strm_output_root,
+            ).delete_invalid_strms(paths)
+        )
+    except Exception as error:
+        current_app.logger.exception("Failed to delete invalid STRM files")
+        return jsonify({"message": f"Failed to delete STRM files: {error}"}), 502
+    return jsonify(result)
+
+
 
 
 @ui_blueprint.route(

@@ -63,6 +63,10 @@ class Alist2StrmService:
             "duplicate_ignored_bytes": 0,
             "duplicate_details": [],
             "duplicate_details_truncated": 0,
+            "invalid_strm_found": 0,
+            "invalid_strm_deleted": 0,
+            "invalid_sidecars_deleted": 0,
+            "invalid_cleanup_errors": [],
         }
 
         download_extensions = set(task.other_extensions)
@@ -105,6 +109,15 @@ class Alist2StrmService:
                     await self._flush_candidates()
                     for _ in range(self.task.max_workers):
                         await self.queue.put(None)
+
+                if self.changed_paths is None and self.task.cleanup_invalid_strm:
+                    cleanup = await asyncio.to_thread(self._delete_invalid_strms)
+                    self.result["invalid_strm_found"] = cleanup["invalid_strm_found"]
+                    self.result["invalid_strm_deleted"] = cleanup["invalid_strm_deleted"]
+                    self.result["invalid_sidecars_deleted"] = cleanup[
+                        "invalid_sidecars_deleted"
+                    ]
+                    self.result["invalid_cleanup_errors"] = cleanup["errors"]
 
         logger_config.logger.info(
             "[alist2strm] task=%s complete created=%s assets=%s skipped=%s failed=%s",
@@ -336,6 +349,135 @@ class Alist2StrmService:
             if current == self.output_base:
                 return
             current = current.parent
+    async def compare_invalid_strms(self) -> dict:
+
+        """Compare generated STRM files with the current complete AList source tree."""
+        async with AsyncAlistClient(
+            self.alist_url,
+            self.api_key,
+            self.request_timeout,
+        ) as client:
+            self.client = client
+            await self._scan_directory(self.task.source_dir)
+        records = await asyncio.to_thread(self._invalid_strm_records)
+        return {
+            "task_uuid": self.task.uuid,
+            "source_dir": self.task.source_dir,
+            "output_dir": str(self.output_base),
+            "source_video_count": sum(
+                1
+                for entries in self.output_candidates.values()
+                for entry in entries
+                if entry.suffix in VIDEO_EXTENSIONS
+            ),
+            "local_strm_count": await asyncio.to_thread(self._local_strm_count),
+            "invalid_strm_count": len(records),
+            "invalid_strms": records,
+        }
+
+    async def delete_invalid_strms(self, selected_paths: list[str]) -> dict:
+        """Delete only STRM files still confirmed invalid by a fresh source scan."""
+        async with AsyncAlistClient(
+            self.alist_url,
+            self.api_key,
+            self.request_timeout,
+        ) as client:
+            self.client = client
+            await self._scan_directory(self.task.source_dir)
+        return await asyncio.to_thread(self._delete_invalid_strms, selected_paths)
+
+    def _valid_strm_paths(self) -> set[Path]:
+        return {
+            path
+            for path, entries in self.output_candidates.items()
+            if any(entry.suffix in VIDEO_EXTENSIONS for entry in entries)
+        }
+
+    def _local_strm_paths(self) -> list[Path]:
+        if not self.output_base.is_dir():
+            return []
+        return sorted(
+            (path for path in self.output_base.rglob("*.strm") if path.is_file()),
+            key=str,
+        )
+
+    def _local_strm_count(self) -> int:
+        return len(self._local_strm_paths())
+
+    def _invalid_strm_records(self) -> list[dict]:
+        valid_paths = self._valid_strm_paths()
+        return [
+            {
+                "strm_path": str(path),
+                "relative_path": str(path.relative_to(self.output_base)),
+                "sidecar_paths": [
+                    str(item) for item in self._companion_paths(path, valid_paths)
+                ],
+            }
+            for path in self._local_strm_paths()
+            if path not in valid_paths
+        ]
+
+    def _companion_paths(self, strm_path: Path, valid_paths: set[Path]) -> list[Path]:
+        """Return generated sidecars belonging to a stale STRM without touching peers."""
+        stem = strm_path.stem
+        sidecar_extensions = (
+            SUBTITLE_EXTENSIONS
+            | IMAGE_EXTENSIONS
+            | NFO_EXTENSIONS
+            | self.download_extensions
+        )
+        valid_stems = {
+            path.stem for path in valid_paths if path.parent == strm_path.parent
+        }
+        companions = []
+        for path in strm_path.parent.iterdir():
+            if not path.is_file() or path.suffix.lower() not in sidecar_extensions:
+                continue
+            if path.stem != stem and not path.stem.startswith(f"{stem}."):
+                continue
+            # A longer, valid STRM name owns its own language sidecar.
+            if any(
+                path.stem == valid_stem or path.stem.startswith(f"{valid_stem}.")
+                for valid_stem in valid_stems
+            ):
+                continue
+            companions.append(path)
+        return sorted(companions, key=str)
+
+    def _delete_invalid_strms(self, selected_paths: list[str] | None = None) -> dict:
+        records = self._invalid_strm_records()
+        selected = None if selected_paths is None else set(selected_paths)
+        if selected is not None:
+            records = [item for item in records if item["strm_path"] in selected]
+
+        result = {
+            "invalid_strm_found": len(records),
+            "invalid_strm_deleted": 0,
+            "invalid_sidecars_deleted": 0,
+            "deleted_strm_paths": [],
+            "deleted_sidecar_paths": [],
+            "errors": [],
+        }
+        for record in records:
+            paths = [Path(record["strm_path"])] + [
+                Path(path) for path in record["sidecar_paths"]
+            ]
+            for path in paths:
+                try:
+                    path.unlink()
+                    if path.suffix.lower() == ".strm":
+                        result["invalid_strm_deleted"] += 1
+                        result["deleted_strm_paths"].append(str(path))
+                    else:
+                        result["invalid_sidecars_deleted"] += 1
+                        result["deleted_sidecar_paths"].append(str(path))
+                except FileNotFoundError:
+                    continue
+                except OSError as error:
+                    result["errors"].append({"path": str(path), "error": str(error)})
+        return result
+
 
 
 def run_alist2strm(

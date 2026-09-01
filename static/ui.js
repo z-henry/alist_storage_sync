@@ -142,7 +142,8 @@ function strmResultSummaryText(result) {
       ? ` · 旧版同名输出错误 ${duplicateGroups} 条`
       : ` · 同名输出 ${duplicateGroups} 组（已有跳过 ${result.duplicate_existing_groups || 0}，选择最大文件 ${result.duplicate_selected_groups || 0}）`
     : " · 无同名输出冲突";
-  return `扫描 ${result.scanned || 0} · 创建 ${result.strm_created || 0} · 已有跳过 ${result.skipped_existing || 0}${duplicateCopy} · 失败 ${result.failed || 0}`;
+  const cleanupCopy = result.invalid_strm_found ? ` · 清理失效 ${result.invalid_strm_deleted || 0} 个 STRM / ${result.invalid_sidecars_deleted || 0} 个附属文件` : "";
+  return `扫描 ${result.scanned || 0} · 创建 ${result.strm_created || 0} · 已有跳过 ${result.skipped_existing || 0}${duplicateCopy}${cleanupCopy} · 失败 ${result.failed || 0}`;
 }
 
 function duplicateActionLabel(action) {
@@ -168,6 +169,7 @@ function createStrmResultSummary(result, detailLimit = 100) {
     ["同名输出", duplicateGroupCount(result)],
     ["忽略源文件", result.duplicate_ignored_count || 0],
     ["处理失败", result.failed || 0],
+    ["清理失效 STRM", result.invalid_strm_deleted || 0],
   ].forEach(([title, value]) => {
     const metric = el("div", "strm-result-metric");
     metric.append(el("span", "", title), el("strong", "", value));
@@ -849,6 +851,7 @@ function appendStrmTask(task = {}) {
     ["image", "下载图片"],
     ["nfo", "下载 NFO"],
     ["overwrite", "覆盖已有文件"],
+    ["cleanup_invalid_strm", "完整生成后自动删除失效 STRM"],
   ].forEach(([field, title]) => {
     const wrapper = el("label", "config-inline-switch");
     const input = el("input");
@@ -935,6 +938,7 @@ function collectConfigForm() {
     overwrite: taskValue(card, "overwrite"),
     other_extensions: taskValue(card, "other_extensions").split(",").map((value) => value.trim()).filter(Boolean),
     max_workers: taskValue(card, "max_workers"),
+    cleanup_invalid_strm: taskValue(card, "cleanup_invalid_strm"),
     max_downloaders: taskValue(card, "max_downloaders"),
   }));
   result.cover_dst_when_diff = document.getElementById("config-cover-dst").checked;
@@ -1128,6 +1132,156 @@ async function runAlist2Strm(task, button) {
     button.textContent = "立即生成";
   }
 }
+async function loadInvalidStrmComparison(task, offset = 0, triggerButton = null) {
+  if (triggerButton) {
+    triggerButton.disabled = true;
+    triggerButton.textContent = "检查中";
+  }
+  try {
+    const response = await fetch(
+      `/ui/api/tasks/alist2strm/${encodeURIComponent(task.task_uuid)}/invalid-strms?limit=100&offset=${offset}`,
+      { headers: { Accept: "application/json" }, cache: "no-store" },
+    );
+    handleAuthentication(response);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `${response.status} ${response.statusText}`);
+    renderInvalidStrmComparison(task, data);
+  } catch (error) {
+    showToast(`失效 STRM 检查失败：${error.message}`);
+  } finally {
+    if (triggerButton) {
+      triggerButton.disabled = false;
+      triggerButton.textContent = "检查失效";
+    }
+  }
+}
+
+function renderInvalidStrmComparison(task, data) {
+  document.getElementById("detail-title").textContent = `失效 STRM 对比 · ${task.task_uuid}`;
+  const content = document.getElementById("detail-content");
+  content.replaceChildren();
+
+  const summary = el("section", "strm-invalid-summary");
+  const metrics = el("div", "strm-invalid-metrics");
+  [
+    ["源视频", data.source_video_count || 0],
+    ["本地 STRM", data.local_strm_count || 0],
+    ["已失效", data.invalid_strm_count || 0],
+  ].forEach(([title, value]) => {
+    const metric = el("div", "strm-result-metric");
+    metric.append(el("span", "", title), el("strong", "", value));
+    metrics.append(metric);
+  });
+  summary.append(metrics);
+  summary.append(el(
+    "p",
+    "strm-result-note",
+    "失效项表示本地 STRM 在当前完整 AList 源目录中已没有对应视频。删除时会再次比对，只会移除仍失效的 STRM 及其同名的字幕、图片、NFO 和已配置的附属文件。",
+  ));
+  summary.append(el("p", "strm-result-note", `源目录：${data.source_dir} → STRM 目录：${data.output_dir}`));
+  content.append(summary);
+
+  const records = data.invalid_strms || [];
+  if (!records.length) {
+    content.append(el("div", "strm-invalid-empty", "没有发现失效 STRM。"));
+  } else {
+    const toolbar = el("div", "strm-invalid-toolbar");
+    const selectAll = el("label", "config-inline-switch");
+    const selectAllInput = el("input");
+    selectAllInput.type = "checkbox";
+    selectAll.append(selectAllInput, el("span", "", "全选本页"));
+    const deleteButton = el("button", "strm-invalid-delete", "删除已选");
+    deleteButton.type = "button";
+    deleteButton.disabled = true;
+    toolbar.append(selectAll, deleteButton);
+    content.append(toolbar);
+
+    const list = el("div", "strm-invalid-list");
+    records.forEach((record) => {
+      const card = el("label", "strm-invalid-card");
+      const checkbox = el("input");
+      checkbox.type = "checkbox";
+      checkbox.value = record.strm_path;
+      const copy = el("span");
+      copy.append(el("code", "", record.relative_path));
+      const sidecars = record.sidecar_paths || [];
+      copy.append(el(
+        "small",
+        "",
+        sidecars.length
+          ? `同时删除 ${sidecars.length} 个同名附属文件`
+          : "没有可删除的同名附属文件",
+      ));
+      card.append(checkbox, copy);
+      list.append(card);
+    });
+    content.append(list);
+
+    const selectedPaths = () => [...list.querySelectorAll("input:checked")].map((input) => input.value);
+    const refreshSelection = () => {
+      const selected = selectedPaths();
+      deleteButton.disabled = !selected.length;
+      deleteButton.textContent = selected.length ? `删除已选（${selected.length}）` : "删除已选";
+      selectAllInput.checked = records.length > 0 && selected.length === records.length;
+      selectAllInput.indeterminate = selected.length > 0 && selected.length < records.length;
+    };
+    selectAllInput.addEventListener("change", () => {
+      list.querySelectorAll("input").forEach((input) => { input.checked = selectAllInput.checked; });
+      refreshSelection();
+    });
+    list.addEventListener("change", refreshSelection);
+    deleteButton.addEventListener("click", async () => {
+      const paths = selectedPaths();
+      if (!window.confirm(`确认删除 ${paths.length} 个失效 STRM 及其列出的同名附属文件？`)) return;
+      deleteButton.disabled = true;
+      deleteButton.textContent = "删除中";
+      try {
+        const response = await fetch(
+          `/ui/api/tasks/alist2strm/${encodeURIComponent(task.task_uuid)}/invalid-strms/delete`,
+          {
+            method: "POST",
+            headers: writeHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
+            body: JSON.stringify({ strm_paths: paths }),
+          },
+        );
+        handleAuthentication(response);
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.message || `${response.status} ${response.statusText}`);
+        showToast(
+          `已删除 ${result.invalid_strm_deleted || 0} 个 STRM、${result.invalid_sidecars_deleted || 0} 个附属文件`,
+          "success",
+        );
+        await loadInvalidStrmComparison(task, data.page?.offset || 0);
+      } catch (error) {
+        showToast(`删除失效 STRM 失败：${error.message}`);
+        refreshSelection();
+      }
+    });
+  }
+
+  const page = data.page || {};
+  if (page.offset || page.truncated) {
+    const pager = el("div", "strm-invalid-pager");
+    if (page.offset) {
+      const previous = el("button", "text-button", "上一页");
+      previous.type = "button";
+      previous.addEventListener("click", () => loadInvalidStrmComparison(task, Math.max(0, page.offset - page.limit)));
+      pager.append(previous);
+    }
+    pager.append(el("span", "", `显示 ${page.offset + records.length}/${page.total || 0}`));
+    if (page.truncated) {
+      const next = el("button", "text-button", "下一页");
+      next.type = "button";
+      next.addEventListener("click", () => loadInvalidStrmComparison(task, page.offset + page.limit));
+      pager.append(next);
+    }
+    content.append(pager);
+  }
+  const dialog = document.getElementById("detail-dialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+
 
 async function runDirTreeBuild(task, button) {
   if (!window.confirm(`确认立即重建目录树？\n${task.parameters?.src || task.task_uuid}`)) return;
@@ -1199,12 +1353,19 @@ function renderTasks(data) {
     }
     if (task.task_type === "alist2strm") {
       const runButton = el("button", "task-run-button", "立即生成");
+      const compareButton = el("button", "task-compare-button", "检查失效");
+      compareButton.type = "button";
+      compareButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        loadInvalidStrmComparison(task, 0, compareButton);
+      });
+
       runButton.type = "button";
       runButton.addEventListener("click", (event) => {
         event.stopPropagation();
         runAlist2Strm(task, runButton);
       });
-      footer.append(runButton);
+      footer.append(compareButton, runButton);
     }
     card.append(footer);
     card.addEventListener("click", () => showDetail(`任务详情 · ${task.task_uuid}`, task));

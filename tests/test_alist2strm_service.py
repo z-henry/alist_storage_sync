@@ -216,6 +216,51 @@ class Alist2StrmServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["strm_created"], 0)
             self.assertEqual(result["failed"], 0)
 
+    async def test_compares_and_cleans_invalid_strm_with_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "library"
+            output.mkdir(parents=True)
+            valid = output / "movie.strm"
+            stale = output / "stale.strm"
+            stale_nfo = output / "stale.nfo"
+            stale_subtitle = output / "stale.zh.srt"
+            stale_image = output / "stale.jpg"
+            for path in (valid, stale, stale_nfo, stale_subtitle, stale_image):
+                path.write_text("placeholder", encoding="utf-8")
+
+            task = Alist2StrmTask(
+                uuid="cleanup-strm",
+                source_dir="/source",
+                target_dir="library",
+                cleanup_invalid_strm=True,
+            )
+            result = await Alist2StrmService(
+                task=task,
+                alist_url=self.alist_url,
+                api_key="test-key",
+                request_timeout=2,
+                output_root=directory,
+            ).run()
+
+            self.assertTrue(valid.exists())
+            self.assertFalse(stale.exists())
+            self.assertFalse(stale_nfo.exists())
+            self.assertFalse(stale_subtitle.exists())
+            self.assertFalse(stale_image.exists())
+            self.assertEqual(result["invalid_strm_found"], 1)
+            self.assertEqual(result["invalid_strm_deleted"], 1)
+            self.assertEqual(result["invalid_sidecars_deleted"], 3)
+
+            comparison = await Alist2StrmService(
+                task=task,
+                alist_url=self.alist_url,
+                api_key="test-key",
+                request_timeout=2,
+                output_root=directory,
+            ).compare_invalid_strms()
+            self.assertEqual(comparison["invalid_strm_count"], 0)
+
+
 
 if __name__ == "__main__":
     unittest.main()

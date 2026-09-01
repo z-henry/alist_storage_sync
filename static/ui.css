@@ -180,6 +180,13 @@ tbody tr:hover { background: #171d27; }
 }
 .task-run-button:hover { background: #17352d; }
 .task-run-button:disabled { opacity: .55; cursor: wait; }
+.task-compare-button {
+  flex: 0 0 auto; border: 1px solid #3f5b77; border-radius: 9px; padding: 8px 12px;
+  background: #111d2b; color: var(--blue); cursor: pointer; font-weight: 700;
+}
+.task-compare-button:hover { background: #17283d; }
+.task-compare-button:disabled { opacity: .55; cursor: wait; }
+
 
 .config-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 9px; }
 .config-body { padding: 22px; }
@@ -260,6 +267,21 @@ tbody tr:hover { background: #171d27; }
 .strm-candidate-state { text-align: center; }
 .strm-candidate code { min-width: 0; overflow-wrap: anywhere; color: inherit; }
 .strm-candidate-size { white-space: nowrap; }
+.strm-invalid-summary { margin: 16px; padding: 16px; border: 1px solid #574231; border-radius: 13px; background: #17120d; }
+.strm-invalid-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.strm-invalid-toolbar, .strm-invalid-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 16px 12px; }
+.strm-invalid-list { display: grid; gap: 8px; margin: 0 16px 16px; }
+.strm-invalid-card { display: flex; gap: 11px; align-items: flex-start; padding: 12px; border: 1px solid #3d3730; border-radius: 10px; background: #111319; cursor: pointer; }
+.strm-invalid-card:has(input:checked) { border-color: #a87849; background: #241b14; }
+.strm-invalid-card input { margin-top: 3px; accent-color: var(--amber); }
+.strm-invalid-card span { min-width: 0; }
+.strm-invalid-card code { display: block; color: #e0ddd7; overflow-wrap: anywhere; font-size: 11px; }
+.strm-invalid-card small { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; }
+.strm-invalid-delete { border: 1px solid #9b5b5b; border-radius: 9px; padding: 8px 12px; background: #2c171b; color: #ffc1c1; cursor: pointer; font-weight: 700; }
+.strm-invalid-delete:disabled { opacity: .55; cursor: not-allowed; }
+.strm-invalid-empty { margin: 16px; padding: 26px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); text-align: center; }
+.strm-invalid-pager { color: var(--muted); font-size: 11px; }
+
 .detail-json { margin: 0 16px 16px; border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
 .detail-json summary { padding: 12px 14px; color: var(--muted); cursor: pointer; font-size: 11px; }
 .detail-json pre { border-top: 1px solid var(--line); }

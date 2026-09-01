@@ -45,6 +45,7 @@ class Alist2StrmTask:
     nfo: bool = False
     mode: str = "alist_url"
     overwrite: bool = False
+    cleanup_invalid_strm: bool = False
     other_extensions: tuple[str, ...] = ()
     max_workers: int = 20
     max_downloaders: int = 3
@@ -59,6 +60,7 @@ class Alist2StrmTask:
             "nfo": self.nfo,
             "mode": self.mode,
             "overwrite": self.overwrite,
+            "cleanup_invalid_strm": self.cleanup_invalid_strm,
             "other_extensions": list(self.other_extensions),
             "max_workers": self.max_workers,
             "max_downloaders": self.max_downloaders,
