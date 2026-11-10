@@ -12,21 +12,23 @@ class ConfigError(ValueError):
 
 
 class Task:
-    def __init__(self, uuid, src, dst, cron="1 * * * *", mounted_path=""):
+    def __init__(self, uuid, src, dst, cron="1 * * * *", mounted_path="", name=""):
         self.src = src
         self.dst = dst
         self.cron = cron
         self.uuid = uuid
         self.mounted_path = mounted_path
+        self.name = name
 
 
 class DirTreeBuildTask:
-    def __init__(self, uuid, src, cron, qps, run_at_start=False):
+    def __init__(self, uuid, src, cron, qps, run_at_start=False, name=""):
         self.uuid = uuid
         self.src = src
         self.cron = cron
         self.qps = qps
         self.run_at_start = run_at_start
+        self.name = name
 
 
 CONFIG_PATH = os.environ.get(
@@ -108,6 +110,7 @@ def validate_config(value):
         if task_uuid in seen_sync_ids:
             raise ConfigError(f"duplicate sync task uuid: {task_uuid}")
         seen_sync_ids.add(task_uuid)
+        task["name"] = _require_string(task.get("name", ""), f"{path}.name", allow_empty=True).strip()
         _require_string(task.get("src"), f"{path}.src")
         _require_string(task.get("dst"), f"{path}.dst")
         _require_string(task.get("cron", "1 * * * *"), f"{path}.cron")
@@ -141,6 +144,7 @@ def validate_config(value):
         if task_uuid in seen_strm_ids:
             raise ConfigError(f"duplicate Alist2Strm task uuid: {task_uuid}")
         seen_strm_ids.add(task_uuid)
+        task["name"] = _require_string(task.get("name", ""), f"{path}.name", allow_empty=True).strip()
         source_dir = _require_string(task.get("source_dir"), f"{path}.source_dir")
         if not source_dir.startswith("/"):
             raise ConfigError(f"{path}.source_dir must be an absolute AList path")
@@ -201,6 +205,7 @@ def validate_config(value):
         if task_uuid in seen_tree_ids:
             raise ConfigError(f"duplicate dir tree task uuid: {task_uuid}")
         seen_tree_ids.add(task_uuid)
+        task["name"] = _require_string(task.get("name", ""), f"{path}.name", allow_empty=True).strip()
         _require_string(task.get("src"), f"{path}.src")
         _require_string(task.get("cron"), f"{path}.cron")
         _number(task.get("qps"), f"{path}.qps", 0.000001)
@@ -241,6 +246,7 @@ def _apply_config(data):
             task["dst"],
             task.get("cron", "1 * * * *"),
             task.get("mounted_path", ""),
+            name=task.get("name", ""),
         )
         for index, task in enumerate(data["tasks"])
     ]
@@ -264,6 +270,7 @@ def _apply_config(data):
             other_extensions=tuple(task.get("other_extensions", [])),
             max_workers=task.get("max_workers", 20),
             max_downloaders=task.get("max_downloaders", 3),
+            name=task.get("name", ""),
         )
         for index, task in enumerate(data.get("alist2strm_tasks", []))
     ]
@@ -285,10 +292,30 @@ def _apply_config(data):
             task["cron"],
             task["qps"],
             task.get("run_at_start", False),
+            name=task.get("name", ""),
         )
         for index, task in enumerate(data.get("dir_tree_build_tasks", []))
     ]
     _raw_config = copy.deepcopy(data)
+
+
+def task_display_name(task_type, task_uuid, fallback_name=""):
+    defaults = {
+        "sync": f"同步任务 {task_uuid}",
+        "alist2strm": f"STRM 生成 {task_uuid}",
+        "dir_tree_build": f"目录树刷新 {task_uuid}",
+        "cache_refresh": "子任务巡检与父任务后处理",
+    }
+    default = defaults.get(task_type, f"{task_type} {task_uuid}")
+    collections = {
+        "sync": sync_tasks,
+        "alist2strm": alist2strm_tasks,
+        "dir_tree_build": dir_tree_build_tasks,
+    }
+    for task in collections.get(task_type, ()):
+        if task.uuid == str(task_uuid):
+            return task.name or default
+    return fallback_name or default
 
 
 def load_config():

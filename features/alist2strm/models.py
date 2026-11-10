@@ -49,6 +49,7 @@ class Alist2StrmTask:
     other_extensions: tuple[str, ...] = ()
     max_workers: int = 20
     max_downloaders: int = 3
+    name: str = ""
 
     def parameters(self) -> dict:
         return {

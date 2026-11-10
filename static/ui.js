@@ -12,6 +12,7 @@ const labels = {
   postprocess: "同步后触发",
   api: "API 触发",
   manual: "手动触发",
+  mixed: "多种触发",
   sync: "存储同步",
   cache_refresh: "子任务巡检与后处理",
   dir_tree_build: "目录树刷新",
@@ -311,19 +312,107 @@ function renderTable(targetId, columns, rows, detailTitle, detailLoader = null) 
   table.append(tbody);
 }
 
+function runDisplayName(run) {
+  return run.task_name || instanceLabel(run.task_type, run.task_uuid);
+}
+
 function runNameCell(run) {
   const wrap = el("div");
-  wrap.append(el("span", "primary-cell", run.task_uuid));
-  wrap.append(el("span", "secondary", `${label(run.task_type)} · ${label(run.trigger_type)}`));
+  wrap.append(el("span", "primary-cell", runDisplayName(run)));
+  wrap.append(el("span", "secondary", `${label(run.task_type)} · ${label(run.trigger_type)} · ID ${run.task_uuid}`));
   return wrap;
 }
 
+function sourceDeletionCounts(run) {
+  const result = run.result || {};
+  const summary = run.source_deletion_summary || {};
+  return {
+    succeeded: Math.max(summary.succeeded || 0, result.source_files_deleted || 0),
+    failed: Math.max(summary.failed || 0, result.source_files_delete_failed || 0),
+  };
+}
+
+function syncSummaryText(run) {
+  if (run.task_type !== "sync") return "";
+  const result = run.result || {};
+  const deleted = sourceDeletionCounts(run);
+  const parts = [];
+  if (typeof result.scanned_entries === "number") parts.push(`扫描 ${result.scanned_entries}`);
+  if (typeof result.copy_requests_submitted === "number") parts.push(`上传 ${result.copy_requests_submitted}`);
+  if (result.directories_created) parts.push(`建目录 ${result.directories_created}`);
+  if (deleted.succeeded || deleted.failed) {
+    parts.push(`源文件删除成功 ${deleted.succeeded} · 删除失败 ${deleted.failed}`);
+  }
+  if (result.failures) parts.push(`操作失败 ${result.failures}`);
+  return parts.join(" · ");
+}
+
 function alistTaskCell(run) {
-  const summary = run.alist_task_summary;
-  if (!summary) return "—";
-  const completed = summary.succeeded + summary.failed;
-  const progress = summary.progress == null ? "" : ` · ${summary.progress.toFixed(1)}%`;
-  return `${completed}/${summary.total}${progress}`;
+  const parts = [];
+  const summary = run.alist_task_summary || run.result?.alist_task_summary;
+  if (summary) {
+    const completed = summary.succeeded + summary.failed;
+    const progress = summary.progress == null ? "" : ` · ${summary.progress.toFixed(1)}%`;
+    parts.push(`上传 ${completed}/${summary.total}${progress}`);
+  }
+  if (!summary && run.result?.copy_requests_submitted) {
+    parts.push(`已提交上传 ${run.result.copy_requests_submitted}`);
+  }
+  const deleted = sourceDeletionCounts(run);
+  if (deleted.succeeded || deleted.failed) {
+    parts.push(`源文件删除 ${deleted.succeeded} 成功 / ${deleted.failed} 失败`);
+  }
+  if (run.result?.directories_created) parts.push(`建目录 ${run.result.directories_created}`);
+  return parts.join("；") || "—";
+}
+
+function renderSourceDeletions(panel, detail) {
+  const counts = sourceDeletionCounts(detail);
+  const deletions = detail.source_deletions || [];
+  if (!counts.succeeded && !counts.failed && !deletions.length) return;
+  panel.append(el("p", "child-summary", `源文件删除：成功 ${counts.succeeded} · 失败 ${counts.failed}`));
+  const historicalCount = counts.succeeded + counts.failed - (detail.source_deletion_summary?.total || 0);
+  if (historicalCount > 0) {
+    panel.append(el("div", "child-empty", `历史记录中有 ${historicalCount} 项仅保存了统计，没有逐文件删除明细。`));
+  }
+  if (!deletions.length) return;
+  const wrap = el("div", "table-wrap child-table-wrap");
+  const table = el("table", "child-table");
+  const head = el("thead");
+  const header = el("tr");
+  ["源文件", "删除状态", "大小", "错误"].forEach((title) => header.append(el("th", "", title)));
+  head.append(header);
+  table.append(head);
+  const body = el("tbody");
+  deletions.forEach((item) => {
+    const row = el("tr");
+    const name = el("td");
+    name.append(
+      el("span", "primary-cell", item.entry_name),
+      el("span", "secondary", `源目录：${item.source_dir}`),
+      el("span", "secondary", `目标已有同名同大小文件：${item.destination_dir}`),
+    );
+    const state = el("td");
+    const badge = statusNode(item.status);
+    badge.textContent = item.status === "succeeded" ? "已删除" : "删除失败";
+    state.append(badge);
+    row.append(name, state, el("td", "", formatBytes(item.total_bytes)),
+      el("td", item.error ? "child-error" : "", item.error || "—"));
+    body.append(row);
+  });
+  table.append(body);
+  wrap.append(table);
+  panel.append(wrap);
+}
+
+function appendChildLoadMore(panel, detail) {
+  if (!detail.alist_tasks_page?.truncated && !detail.source_deletions_page?.truncated) return;
+  const loaded = (detail.alist_tasks || []).length + (detail.source_deletions || []).length;
+  const total = (detail.alist_tasks_page?.total || 0) + (detail.source_deletions_page?.total || 0);
+  const more = el("button", "load-more", `继续加载（已显示 ${loaded}/${total}）`);
+  more.type = "button";
+  more.addEventListener("click", () => loadRunDetail(detail.run_id, true));
+  panel.append(more);
 }
 
 function childStatus(task) {
@@ -358,9 +447,9 @@ function renderRunChildren(panel, detail) {
   const toolbar = el("div", "child-toolbar");
   const copy = strmResult
     ? strmResultSummaryText(strmResult)
-    : summary
-    ? `成功 ${summary.succeeded} · 失败 ${summary.failed} · 等待 ${summary.pending} · 共 ${summary.total}`
-    : "该父任务没有 AList 文件子任务";
+    : [syncSummaryText(detail), summary
+      ? `上传成功 ${summary.succeeded} · 失败 ${summary.failed} · 等待 ${summary.pending} · 共 ${summary.total}`
+      : ""].filter(Boolean).join("；") || "该父任务没有文件操作记录";
   toolbar.append(el("span", "child-summary", copy));
   const detailButton = el(
     "button",
@@ -370,7 +459,7 @@ function renderRunChildren(panel, detail) {
   detailButton.type = "button";
   detailButton.addEventListener("click", () => {
     const { alist_tasks: _alistTasks, ...parentDetail } = detail;
-    showDetail(`运行详情 · ${detail.task_uuid}`, parentDetail);
+    showDetail(`运行详情 · ${runDisplayName(detail)}`, parentDetail);
   });
   toolbar.append(detailButton);
   panel.append(toolbar);
@@ -380,9 +469,14 @@ function renderRunChildren(panel, detail) {
     return;
   }
 
+  renderSourceDeletions(panel, detail);
   const tasks = detail.alist_tasks || [];
   if (!tasks.length) {
-    panel.append(el("div", "child-empty", "暂无子任务记录"));
+    const deleted = sourceDeletionCounts(detail);
+    if (!deleted.succeeded && !deleted.failed) {
+      panel.append(el("div", "child-empty", "暂无文件子任务记录"));
+    }
+    appendChildLoadMore(panel, detail);
     return;
   }
 
@@ -420,12 +514,7 @@ function renderRunChildren(panel, detail) {
   wrap.append(table);
   panel.append(wrap);
 
-  if (detail.alist_tasks_page?.truncated) {
-    const more = el("button", "load-more", `继续加载（已显示 ${tasks.length}/${detail.alist_tasks_page.total}）`);
-    more.type = "button";
-    more.addEventListener("click", () => loadRunDetail(detail.run_id, true));
-    panel.append(more);
-  }
+  appendChildLoadMore(panel, detail);
 }
 
 function updateRunChildPanels(runId) {
@@ -435,42 +524,35 @@ function updateRunChildPanels(runId) {
 }
 
 async function loadRunDetail(runId, loadMore = false) {
-  if (!loadMore && runDetailRequests.has(runId)) return runDetailRequests.get(runId);
+  if (runDetailRequests.has(runId)) return runDetailRequests.get(runId);
   const existing = runDetailCache.get(runId);
-  const existingCount = existing?.alist_tasks?.length || 0;
+  const existingCount = existing?.children_loaded || 0;
   const offset = loadMore ? existingCount : 0;
-  const limit = loadMore ? childPageSize : Math.max(childPageSize, Math.min(existingCount, 1000));
+  const limit = loadMore ? childPageSize : Math.max(childPageSize, Math.min(existingCount, 500));
   if (existing && !loadMore) updateRunChildPanels(runId);
   childPanelTargets(runId).forEach((panel) => {
-    if (!existing || loadMore) panel.textContent = loadMore ? "正在加载更多子任务…" : "正在加载子任务…";
+    if (!existing || loadMore) panel.textContent = loadMore ? "正在加载更多记录…" : "正在加载文件记录…";
   });
 
   const request = getJson(
     `/ui/api/runs/${encodeURIComponent(runId)}?limit=${limit}&offset=${offset}`,
   ).then(({ run }) => {
-    if (loadMore && existing) {
-      const mergedTasks = [...(existing.alist_tasks || []), ...(run.alist_tasks || [])];
-      run.alist_tasks = mergedTasks;
-      run.alist_tasks_page = {
-        ...run.alist_tasks_page,
-        offset: 0,
-        returned: mergedTasks.length,
-        truncated: mergedTasks.length < run.alist_tasks_page.total,
-      };
-    } else if (existing && existingCount > (run.alist_tasks || []).length) {
-      const refreshedCount = (run.alist_tasks || []).length;
-      const preservedTasks = (existing.alist_tasks || []).slice(
-        refreshedCount,
-        run.alist_tasks_page.total,
-      );
-      run.alist_tasks = [...(run.alist_tasks || []), ...preservedTasks];
-      run.alist_tasks_page = {
-        ...run.alist_tasks_page,
-        offset: 0,
-        returned: run.alist_tasks.length,
-        truncated: run.alist_tasks.length < run.alist_tasks_page.total,
+    for (const key of ["alist_tasks", "source_deletions"]) {
+      const pageKey = `${key}_page`;
+      if (!run[pageKey]) continue;
+      const incoming = run[key] || [];
+      if (loadMore && existing) {
+        run[key] = [...(existing[key] || []), ...incoming];
+      } else if (existing && existingCount > limit) {
+        run[key] = [...incoming, ...(existing[key] || []).slice(limit, run[pageKey].total)];
+      }
+      run[pageKey] = {
+        ...run[pageKey], offset: 0,
+        returned: (run[key] || []).length,
+        truncated: (run[key] || []).length < run[pageKey].total,
       };
     }
+    run.children_loaded = loadMore ? offset + limit : Math.max(limit, existingCount);
     runDetailCache.set(runId, run);
     updateRunChildPanels(runId);
     return run;
@@ -481,7 +563,7 @@ async function loadRunDetail(runId, loadMore = false) {
     throw error;
   }).finally(() => runDetailRequests.delete(runId));
 
-  if (!loadMore) runDetailRequests.set(runId, request);
+  runDetailRequests.set(runId, request);
   return request;
 }
 
@@ -501,7 +583,7 @@ function renderRunsTable(target, runs) {
   table.replaceChildren();
   const thead = el("thead");
   const header = el("tr");
-  ["", "任务", "状态", "AList 子任务", "进入队列", "耗时", "运行 ID"]
+  ["", "任务", "状态", "文件操作", "进入队列", "耗时", "运行 ID"]
     .forEach((title) => header.append(el("th", "", title)));
   thead.append(header);
   table.append(thead);
@@ -520,8 +602,8 @@ function renderRunsTable(target, runs) {
       const row = el("tr", "overview-group-row");
       const name = el("td");
       name.append(
-        el("span", "primary-cell", run.task_uuid),
-        el("span", "secondary", `${label(run.task_type)} · 定时触发 · 已合并 ${run.run_count} 次`),
+        el("span", "primary-cell", runDisplayName(run)),
+        el("span", "secondary", `${label(run.task_type)} · ${label(run.trigger_type)} · ID ${run.task_uuid} · 已合并 ${run.run_count} 次`),
       );
       const state = el("td");
       state.append(overviewGroupStatus(run));
@@ -630,7 +712,7 @@ function renderOverviewRunGroups(runs) {
     const title = el(
       "span",
       "run-group-title",
-      instanceLabel(group.taskType, group.taskUuid),
+      runDisplayName(groupRuns[0]),
     );
     const latestCreatedAt = groupRuns.reduce(
       (latest, run) => {
@@ -675,7 +757,7 @@ function populateRunInstanceFilter(configuredTasks, recentRuns) {
   (recentRuns || []).forEach((run) => {
     const key = instanceKey(run.task_type, run.task_uuid);
     if (!instances.has(key)) {
-      instances.set(key, instanceLabel(run.task_type, run.task_uuid));
+      instances.set(key, runDisplayName(run));
     }
   });
 
@@ -777,7 +859,8 @@ function createTaskSelect(labelText, field, value, options) {
 
 function renumberConfigTasks(container, title) {
   [...container.querySelectorAll(".config-task-item")].forEach((card, index) => {
-    card.querySelector(".config-task-number").textContent = `${title} ${index + 1}`;
+    const name = card.querySelector('[data-config-field="name"]')?.value.trim();
+    card.querySelector(".config-task-number").textContent = name || `${title} ${index + 1}`;
   });
 }
 
@@ -797,6 +880,7 @@ function appendSyncTask(task = {}) {
   heading.append(remove);
   const fields = el("div", "config-field-grid");
   fields.append(
+    createTaskField("任务名称", "name", task.name ?? "", { required: false, placeholder: "填写易辨认的名称，留空使用默认名称" }),
     createTaskField("实例 UUID", "uuid", task.uuid, { placeholder: "例如 movie-pilot" }),
     createTaskField("Cron", "cron", task.cron ?? "0 * * * *", { placeholder: "0 * * * *" }),
     createTaskField("源路径", "src", task.src, { wide: true, placeholder: "/source/path" }),
@@ -808,6 +892,9 @@ function appendSyncTask(task = {}) {
     }),
   );
   card.append(heading, fields);
+  card.addEventListener("input", (event) => {
+    if (event.target.dataset.configField === "name") renumberConfigTasks(container, "同步任务");
+  });
   container.append(card);
   renumberConfigTasks(container, "同步任务");
 }
@@ -828,6 +915,7 @@ function appendStrmTask(task = {}) {
   heading.append(remove);
   const fields = el("div", "config-field-grid");
   fields.append(
+    createTaskField("任务名称", "name", task.name ?? "", { required: false, placeholder: "填写易辨认的名称，留空使用默认名称" }),
     createTaskField("实例 UUID", "uuid", task.uuid, { placeholder: "例如 movies-strm" }),
     createTaskField("Cron", "cron", task.cron ?? "0 */6 * * *", { placeholder: "0 */6 * * *" }),
     createTaskField("AList 源目录", "source_dir", task.source_dir, { wide: true, placeholder: "/媒体/电影" }),
@@ -862,6 +950,9 @@ function appendStrmTask(task = {}) {
     switches.append(wrapper);
   });
   card.append(heading, fields, switches);
+  card.addEventListener("input", (event) => {
+    if (event.target.dataset.configField === "name") renumberConfigTasks(container, "STRM 任务");
+  });
   container.append(card);
   renumberConfigTasks(container, "STRM 任务");
 }
@@ -882,6 +973,7 @@ function appendTreeTask(task = {}) {
   heading.append(remove);
   const fields = el("div", "config-field-grid");
   fields.append(
+    createTaskField("任务名称", "name", task.name ?? "", { required: false, placeholder: "填写易辨认的名称，留空使用默认名称" }),
     createTaskField("实例 UUID", "uuid", task.uuid, { placeholder: "例如 refresh-115" }),
     createTaskField("Cron", "cron", task.cron ?? "0 12 * * *", { placeholder: "0 12 * * *" }),
     createTaskField("目录路径", "src", task.src, { wide: true, placeholder: "/115" }),
@@ -894,6 +986,9 @@ function appendTreeTask(task = {}) {
   checkbox.checked = Boolean(task.run_at_start);
   runAtStart.append(checkbox, el("span", "", "应用启动时执行一次"));
   card.append(heading, fields, runAtStart);
+  card.addEventListener("input", (event) => {
+    if (event.target.dataset.configField === "name") renumberConfigTasks(container, "刷新任务");
+  });
   container.append(card);
   renumberConfigTasks(container, "刷新任务");
 }
@@ -919,6 +1014,7 @@ function collectConfigForm() {
   result.tasks = [...document.querySelectorAll("#config-sync-tasks .config-task-item")].map((card) => ({
     ...(card.configOriginal || {}),
     uuid: taskValue(card, "uuid"),
+    name: taskValue(card, "name"),
     src: taskValue(card, "src"),
     dst: taskValue(card, "dst"),
     cron: taskValue(card, "cron"),
@@ -927,6 +1023,7 @@ function collectConfigForm() {
   result.alist2strm_tasks = [...document.querySelectorAll("#config-strm-tasks .config-task-item")].map((card) => ({
     ...(card.configOriginal || {}),
     uuid: taskValue(card, "uuid"),
+    name: taskValue(card, "name"),
     source_dir: taskValue(card, "source_dir"),
     target_dir: taskValue(card, "target_dir"),
     cron: taskValue(card, "cron"),
@@ -946,6 +1043,7 @@ function collectConfigForm() {
   result.dir_tree_build_tasks = [...document.querySelectorAll("#config-tree-tasks .config-task-item")].map((card) => ({
     ...(card.configOriginal || {}),
     uuid: taskValue(card, "uuid"),
+    name: taskValue(card, "name"),
     src: taskValue(card, "src"),
     cron: taskValue(card, "cron"),
     qps: taskValue(card, "qps"),
@@ -1122,7 +1220,7 @@ async function runAlist2Strm(task, button) {
     } else if (status === "skipped_unavailable") {
       showToast("AList 当前不可用，本次触发已跳过");
     } else {
-      showToast(`STRM 生成已加入独立队列 · ${task.task_uuid}`, "success");
+      showToast(`STRM 生成已加入独立队列 · ${task.name || task.task_uuid}`, "success");
     }
     await refreshAll();
   } catch (error) {
@@ -1157,7 +1255,7 @@ async function loadInvalidStrmComparison(task, offset = 0, triggerButton = null)
 }
 
 function renderInvalidStrmComparison(task, data) {
-  document.getElementById("detail-title").textContent = `失效 STRM 对比 · ${task.task_uuid}`;
+  document.getElementById("detail-title").textContent = `失效 STRM 对比 · ${task.name || task.task_uuid}`;
   const content = document.getElementById("detail-content");
   content.replaceChildren();
 
@@ -1303,7 +1401,7 @@ async function runDirTreeBuild(task, button) {
     } else if (status === "skipped_unavailable") {
       showToast("AList 当前不可用，本次手动触发已跳过");
     } else {
-      showToast(`目录树重建已加入队列 · ${task.task_uuid}`, "success");
+      showToast(`目录树重建已加入队列 · ${task.name || task.task_uuid}`, "success");
     }
     await refreshAll();
   } catch (error) {
@@ -1368,7 +1466,7 @@ function renderTasks(data) {
       footer.append(compareButton, runButton);
     }
     card.append(footer);
-    card.addEventListener("click", () => showDetail(`任务详情 · ${task.task_uuid}`, task));
+    card.addEventListener("click", () => showDetail(`任务详情 · ${task.name}`, task));
     grid.append(card);
   });
 }

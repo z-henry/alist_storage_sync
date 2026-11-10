@@ -2,12 +2,14 @@
     "tasks": [
         {
             "uuid": "aliyunsub",
+            "name": "阿里云订阅 → 115",
             "src": "/aliyun/test",
             "dst": "/115/test",
             "cron": "0/1 * * * *"
         },
         {
             "uuid": "movie-pilot",
+            "name": "MP 整理目录 → 115",
             "src": "/mydisk/test",
             "dst": "/115/test",
             "cron": "0/1 * * * *",
@@ -17,6 +19,7 @@
     "alist2strm_tasks": [
         {
             "uuid": "movies-strm",
+            "name": "电影 STRM 生成",
             "source_dir": "/115/电影",
             "target_dir": "movies",
             "cron": "0 */6 * * *",
@@ -55,6 +58,7 @@
     "dir_tree_build_tasks":[
         {
             "uuid": "",
+            "name": "115 目录树刷新",
             "src": "/115",
             "qps":0.01,
             "cron": "0 12 * * *",

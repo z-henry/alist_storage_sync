@@ -104,10 +104,10 @@ def _is_zero(value):
 
 
 def _overview_kind(task_type, trigger_type, status, result):
-    if trigger_type != "scheduled":
-        return OVERVIEW_RAW_KIND
     if status == "skipped_busy":
         return OVERVIEW_BUSY_SKIP_KIND
+    if trigger_type != "scheduled":
+        return OVERVIEW_RAW_KIND
     if status != "succeeded" or not isinstance(result, dict):
         return OVERVIEW_RAW_KIND
     if task_type == "sync":
@@ -138,7 +138,16 @@ def _classify_overview_run(connection, run_id):
     ended_at = row["finished_at"] or row["created_at"]
     if previous and previous["overview_kind"] == kind and previous["overview_group_id"]:
         group_id = previous["overview_group_id"]
-        connection.execute("""UPDATE overview_run_groups SET last_run_id = ?, run_count = run_count + 1, ended_at = ?, last_created_at = ?, updated_at = ? WHERE group_id = ?""", (run_id, ended_at, row["created_at"], now, group_id))
+        connection.execute(
+            """
+            UPDATE overview_run_groups
+            SET last_run_id = ?, run_count = run_count + 1, ended_at = ?,
+                last_created_at = ?, updated_at = ?,
+                trigger_type = CASE WHEN trigger_type = ? THEN trigger_type ELSE 'mixed' END
+            WHERE group_id = ?
+            """,
+            (run_id, ended_at, row["created_at"], now, row["trigger_type"], group_id),
+        )
     else:
         group_id = str(uuid.uuid4())
         connection.execute("""INSERT INTO overview_run_groups (group_id, task_type, task_uuid, overview_kind, trigger_type, first_run_id, last_run_id, run_count, started_at, ended_at, last_created_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)""", (group_id, row["task_type"], row["task_uuid"], kind, row["trigger_type"], run_id, run_id, row["created_at"], ended_at, row["created_at"], now, now))
@@ -264,6 +273,26 @@ def init_db():
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS source_file_deletions (
+                    deletion_id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    source_dir TEXT NOT NULL,
+                    destination_dir TEXT NOT NULL,
+                    entry_name TEXT NOT NULL,
+                    total_bytes INTEGER,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES task_runs(run_id)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_source_file_deletions_run "
+                "ON source_file_deletions(run_id, deletion_id)"
+            )
             _ensure_column(connection, "task_runs", "postprocess_status", "TEXT")
             _ensure_column(connection, "task_runs", "postprocess_started_at", "TEXT")
             _ensure_column(connection, "task_runs", "postprocess_finished_at", "TEXT")
@@ -339,8 +368,30 @@ def init_db():
                 SET postprocess_status = 'pending',
                     postprocess_started_at = NULL
                 WHERE postprocess_status = 'running'
+                   OR (postprocess_status = 'failed'
+                       AND status IN ('failed', 'interrupted')
+                       AND EXISTS (SELECT 1 FROM alist_copy_tasks
+                                   WHERE alist_copy_tasks.run_id = task_runs.run_id))
                 """
             )
+            # Rebuild affected instances once so older API busy skips join their
+            # adjacent groups too. Keep all underlying run/request records.
+            if connection.execute("PRAGMA user_version").fetchone()[0] < 1:
+                affected = connection.execute(
+                    "SELECT DISTINCT task_type, task_uuid FROM task_runs "
+                    "WHERE status = 'skipped_busy' AND trigger_type != 'scheduled'"
+                ).fetchall()
+                for instance in affected:
+                    parameters = (instance["task_type"], instance["task_uuid"])
+                    connection.execute(
+                        "UPDATE task_runs SET overview_kind = NULL, overview_group_id = NULL "
+                        "WHERE task_type = ? AND task_uuid = ?", parameters,
+                    )
+                    connection.execute(
+                        "DELETE FROM overview_run_groups WHERE task_type = ? AND task_uuid = ?",
+                        parameters,
+                    )
+                connection.execute("PRAGMA user_version = 1")
             _backfill_overview_groups(connection)
         _INITIALIZED = True
 
@@ -514,6 +565,26 @@ def update_run(run_id, status, result=None, error=None):
             _classify_overview_run(connection, run_id)
 
 
+def record_source_file_deletion(
+    run_id, source_dir, destination_dir, entry_name, total_bytes, success,
+):
+    if not run_id:
+        return
+    init_db()
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO source_file_deletions (
+                run_id, source_dir, destination_dir, entry_name, total_bytes,
+                status, error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, source_dir, destination_dir, entry_name, total_bytes,
+             "succeeded" if success else "failed",
+             None if success else "源文件删除请求失败，请查看运行日志", utc_now()),
+        )
+
+
 def record_alist_copy_tasks(run_id, tasks, source_dir, destination_dir, entry_name):
     if not tasks:
         return
@@ -565,7 +636,12 @@ def record_alist_copy_tasks(run_id, tasks, source_dir, destination_dir, entry_na
 
 def finalize_waiting_alist_runs(run_id=None):
     init_db()
-    clauses = ["status = 'waiting_alist'"]
+    # A sync scan can fail after submitting copies. Those copies still need
+    # reconciliation and record cleanup, without turning the failed run green.
+    clauses = ["(status = 'waiting_alist' OR "
+               "(status IN ('failed', 'interrupted') AND postprocess_status IS NULL "
+               "AND EXISTS (SELECT 1 FROM alist_copy_tasks "
+               "WHERE alist_copy_tasks.run_id = task_runs.run_id)))"]
     values = []
     if run_id:
         clauses.append("run_id = ?")
@@ -574,7 +650,7 @@ def finalize_waiting_alist_runs(run_id=None):
     finalized = []
     with _connect() as connection:
         runs = connection.execute(
-            f"SELECT run_id, result_json FROM task_runs WHERE {' AND '.join(clauses)}",
+            f"SELECT run_id, status, finished_at, result_json FROM task_runs WHERE {' AND '.join(clauses)}",
             values,
         ).fetchall()
         for run in runs:
@@ -612,7 +688,11 @@ def finalize_waiting_alist_runs(run_id=None):
             fields = ["result_json = ?"]
             update_values = [_json_dump(result)]
             if summary["pending"] == 0:
-                final_status = "failed" if summary["failed"] else "succeeded"
+                final_status = (
+                    run["status"] if run["status"] in ("failed", "interrupted")
+                    else "failed" if summary["failed"] or result.get("failures")
+                    else "succeeded"
+                )
                 fields.extend(
                     [
                         "status = ?",
@@ -620,7 +700,7 @@ def finalize_waiting_alist_runs(run_id=None):
                         "postprocess_status = 'pending'",
                     ]
                 )
-                update_values.extend([final_status, utc_now()])
+                update_values.extend([final_status, run["finished_at"] or utc_now()])
                 if summary["failed"]:
                     failed_ids = connection.execute(
                         """
@@ -632,7 +712,7 @@ def finalize_waiting_alist_runs(run_id=None):
                         """,
                         (run["run_id"],),
                     ).fetchall()
-                    fields.append("error = ?")
+                    fields.append("error = COALESCE(error, ?)")
                     update_values.append(
                         "AList copy task failed or was canceled: "
                         + ", ".join(row["alist_task_id"] for row in failed_ids)
@@ -736,7 +816,8 @@ def reconcile_alist_copy_tasks(done_tasks, undone_tasks, missing_timeout_seconds
                 SELECT child.alist_task_id
                 FROM alist_copy_tasks AS child
                 JOIN task_runs AS parent ON parent.run_id = child.run_id
-                WHERE parent.status = 'waiting_alist'
+                WHERE (parent.status = 'waiting_alist' OR
+                       (parent.status IN ('failed', 'interrupted') AND parent.postprocess_status IS NULL))
                   AND child.completed_at IS NULL
                   AND child.last_seen_at <= ?
                 """,
@@ -779,6 +860,9 @@ def claim_pending_postprocess_runs(limit=100):
             SELECT run_id, status
             FROM task_runs
             WHERE postprocess_status = 'pending'
+              AND NOT EXISTS (SELECT 1 FROM alist_copy_tasks
+                              WHERE alist_copy_tasks.run_id = task_runs.run_id
+                                AND completed_at IS NULL)
             ORDER BY finished_at, created_at
             LIMIT ?
             """,
@@ -1044,7 +1128,25 @@ def get_run(run_id, child_limit=500, child_offset=0):
             (run_id,),
         ).fetchone()
 
+        deletion_rows = connection.execute(
+            "SELECT * FROM source_file_deletions WHERE run_id = ? "
+            "ORDER BY deletion_id LIMIT ? OFFSET ?", (run_id, limit, offset),
+        ).fetchall()
+        deletion_summary = dict(connection.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(status = 'succeeded'), 0) AS succeeded, "
+            "COALESCE(SUM(status = 'failed'), 0) AS failed "
+            "FROM source_file_deletions WHERE run_id = ?", (run_id,),
+        ).fetchone())
+
     run = _parse_json_columns(row)
+    run["source_deletions"] = [dict(deletion) for deletion in deletion_rows]
+    run["source_deletion_summary"] = deletion_summary
+    run["source_deletions_page"] = {
+        "offset": offset, "limit": limit, "returned": len(deletion_rows),
+        "total": deletion_summary["total"],
+        "truncated": offset + len(deletion_rows) < deletion_summary["total"],
+    }
     tasks = [dict(task_row) for task_row in task_rows]
     summary = dict(summary_row)
     summary["succeeded"] = summary["succeeded"] or 0

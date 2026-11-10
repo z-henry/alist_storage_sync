@@ -53,6 +53,22 @@ def _offset():
         return 0
 
 
+def _named_run(run):
+    if run is None:
+        return None
+    return {
+        **run,
+        "task_name": config.task_display_name(
+            run["task_type"], run["task_uuid"],
+            (run.get("parameters") or {}).get("task_name", ""),
+        ),
+    }
+
+
+def _named_runs(runs):
+    return [_named_run(run) for run in runs]
+
+
 @ui_blueprint.before_request
 def require_ui_session():
     if request.endpoint == "ui.login":
@@ -213,7 +229,7 @@ def overview():
             "version": APP_VERSION,
             "runtime": runtime,
             "counts": counts,
-            "recent_activity": recent_activity,
+            "recent_activity": _named_runs(recent_activity),
         }
     )
 
@@ -224,7 +240,7 @@ def tasks():
     recent_runs = runtime_store.list_runs(limit=500)
     latest = {}
     for run in recent_runs:
-        latest.setdefault((run["task_type"], run["task_uuid"]), run)
+        latest.setdefault((run["task_type"], run["task_uuid"]), _named_run(run))
 
     items = []
     for task in config.sync_tasks:
@@ -233,7 +249,7 @@ def tasks():
             {
                 "task_uuid": task.uuid,
                 "task_type": "sync",
-                "name": f"同步任务 {task.uuid}",
+                "name": config.task_display_name("sync", task.uuid),
                 "schedule": task.cron,
                 "next_run_time": job.get("next_run_time"),
                 "parameters": {
@@ -251,7 +267,7 @@ def tasks():
             {
                 "task_uuid": task.uuid,
                 "task_type": "alist2strm",
-                "name": f"STRM 生成 {task.uuid}",
+                "name": config.task_display_name("alist2strm", task.uuid),
                 "schedule": task.cron,
                 "next_run_time": job.get("next_run_time"),
                 "parameters": {
@@ -284,7 +300,7 @@ def tasks():
             {
                 "task_uuid": task.uuid,
                 "task_type": "dir_tree_build",
-                "name": f"目录树刷新 {task.uuid}",
+                "name": config.task_display_name("dir_tree_build", task.uuid),
                 "schedule": task.cron,
                 "next_run_time": job.get("next_run_time"),
                 "parameters": {
@@ -469,7 +485,7 @@ def run_dir_tree_build_task(task_uuid):
 def runs():
     return jsonify(
         {
-            "runs": runtime_store.list_runs(
+            "runs": _named_runs(runtime_store.list_runs(
                 limit=_limit(),
                 status=request.args.get("status"),
                 task_type=request.args.get("task_type"),
@@ -477,7 +493,7 @@ def runs():
                 trigger_type=request.args.get("trigger_type"),
                 created_from=request.args.get("created_from"),
                 created_to=request.args.get("created_to"),
-            )
+            ))
         }
     )
 
@@ -491,7 +507,7 @@ def run_detail(run_id):
     )
     if run is None:
         return jsonify({"message": "run not found"}), 404
-    return jsonify({"run": run})
+    return jsonify({"run": _named_run(run)})
 
 
 @ui_blueprint.route("/ui/api/requests")

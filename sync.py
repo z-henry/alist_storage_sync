@@ -16,6 +16,7 @@ def _new_summary():
         "alist_tasks_created": 0,
         "replacement_requests_submitted": 0,
         "source_files_deleted": 0,
+        "source_files_delete_failed": 0,
         "unchanged_entries": 0,
         "failures": 0,
     }
@@ -105,10 +106,15 @@ def sync_files(path_src, path_dst, summary=None, run_id=None):
                 summary["unchanged_entries"] += 1
         elif config.delete_src_when_same:
             logger_config.logger.info(f"Deleting file {file_name} from {path_src}")
-            if remove_file(path_src, file_name):
+            deleted = remove_file(path_src, file_name)
+            runtime_store.record_source_file_deletion(
+                run_id, path_src, path_dst, file_name, file_size, deleted,
+            )
+            if deleted:
                 summary["source_files_deleted"] += 1
             else:
                 logger_config.logger.error(f"Failed to delete {file_name} from {path_src}")
+                summary["source_files_delete_failed"] += 1
                 summary["failures"] += 1
         else:
             summary["unchanged_entries"] += 1

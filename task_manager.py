@@ -100,6 +100,10 @@ def _enqueue(
     request_id=None,
     work_queue=None,
 ):
+    parameters = {
+        **parameters,
+        "task_name": config.task_display_name(task_type, task_uuid),
+    }
     if not api_alist.is_online():
         run_id = runtime_store.create_run(
             task_uuid=task_uuid,
@@ -443,7 +447,7 @@ def _add_scheduler_jobs():
             args=[sync_task, False],
             trigger=CronTrigger.from_crontab(sync_task.cron),
             id=f"sync:{sync_task.uuid}",
-            name=f"同步任务 {sync_task.uuid}",
+            name=config.task_display_name("sync", sync_task.uuid),
         )
 
     for task in config.alist2strm_tasks:
@@ -452,7 +456,7 @@ def _add_scheduler_jobs():
             args=[task],
             trigger=CronTrigger.from_crontab(task.cron),
             id=f"alist2strm:{task.uuid}",
-            name=f"STRM 生成 {task.uuid}",
+            name=config.task_display_name("alist2strm", task.uuid),
         )
     scheduler.add_job(
         check_cache_refresh,
@@ -470,7 +474,7 @@ def _add_scheduler_jobs():
             args=[task],
             trigger=CronTrigger.from_crontab(task.cron),
             id=f"dir-tree:{task.uuid}",
-            name=f"目录树刷新 {task.uuid}",
+            name=config.task_display_name("dir_tree_build", task.uuid),
             **kwargs,
         )
 

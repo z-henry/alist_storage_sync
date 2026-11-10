@@ -213,6 +213,14 @@ def copy_delete_tasks(task_ids):
         logger_config.logger.error(f"Failed to delete completed copy tasks: {message}")
         return False
     errors = text.get("data") or {}
+    if isinstance(errors, dict):
+        # A completed task may already have been cleared manually or during a
+        # previous attempt. Its absence satisfies this record-cleanup request.
+        missing = [task_id for task_id, error in errors.items()
+                   if isinstance(error, str) and error.strip().lower() == "task not found"]
+        if missing:
+            logger_config.logger.info(f"Completed copy task records already absent: {len(missing)}")
+            errors = {task_id: error for task_id, error in errors.items() if task_id not in missing}
     if errors:
         logger_config.logger.error(f"Failed to delete some completed copy tasks: {errors}")
         return False
